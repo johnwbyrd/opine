@@ -4,6 +4,8 @@
 
 A C++20 header-only library for compile-time configurable floating-point arithmetic that works everywhere—from 1 MHz 6502s to modern GPUs.
 
+https://youtu.be/j95kNwZw8YY?si=Cdnub3G8hclDpHVm
+
 ## Key Features
 
 - **Zero Runtime Overhead**: All configuration decisions made at compile time
