@@ -4,7 +4,7 @@
 
 A C++20 header-only library for compile-time configurable floating-point arithmetic that works everywhere—from 1 MHz 6502s to modern GPUs.
 
-https://youtu.be/j95kNwZw8YY?si=Cdnub3G8hclDpHVm
+[![](https://utfs.io/f/nGnSqDveMsqxmeqXINjRJyeGzNLsqiK3drCnoHp7jO1acDgB)](https://www.youtube.com/watch?v=j95kNwZw8YY)
 
 ## Key Features
 
