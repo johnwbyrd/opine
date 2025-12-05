@@ -4,7 +4,21 @@
 
 A C++20 header-only library for compile-time configurable floating-point arithmetic that works everywhere—from 1 MHz 6502s to modern GPUs.
 
+OPINE makes the trade-offs between speed and accuracy explicit and user-selectable.  OPINE treats IEEE-754 as a set of *suggestions*, which you can certainly follow if you wish; however, OPINE also gives you the ability to *cut corners* and *stretch the truth*, in the name of generating faster code.
+
+Machine learning, AI, games, and other "close enough for rock and roll" type applications, can see *significant performance benefits* by using OPINE instead of their built-in math libraries.
+
+You think that two plus two equals four?  Well, that's, just like, your opinion, man.
+
 [![](https://utfs.io/f/nGnSqDveMsqxmeqXINjRJyeGzNLsqiK3drCnoHp7jO1acDgB)](https://www.youtube.com/watch?v=j95kNwZw8YY)
+
+Do not misunderstand: OPINE can generate math libraries that are *substantially more accurate* than your built-in math libraries.  However, you explicitly have to *ask* for that as part of your OPINE policy.
+
+Yes, OPINE gives you sensible out-of-the-box defaults; but OPINE is most practically useful, once you decide to *stretch your definitions* a little.  Maybe you don't really *need* INF or NaN.  Maybe you don't really *need* negative zero.  And if you don't need them, you shouldn't pay for them with extra run-time execution.
+
+If you're the type of programmer who thinks that round-to-even is a way to finish wood, then this template library is not for you.
+
+But if you know what you're doing.. and if you *feel the need... the need for speed*, then maybe you need to OPINE.
 
 ## Key Features
 
