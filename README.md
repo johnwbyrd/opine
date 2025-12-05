@@ -121,8 +121,27 @@ Contributions welcome! Please see design docs for architectural principles.
 
 # Further reading
 
-https://www.vinc17.net/research/fptest.en.html
-https://people.math.sc.edu/Burkardt/c_src/paranoia/paranoia.html
-https://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition/
-https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html
+### Foundational References
+
+- [What Every Computer Scientist Should Know About Floating-Point Arithmetic](https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html) — Goldberg's essential introduction to floating-point representation and error analysis
+- [How Java's Floating-Point Hurts Everyone Everywhere](https://www.cs.berkeley.edu/~wkahan/JAVAhurt.pdf) — Kahan & Darcy on portability pitfalls and IEEE 754 compliance issues
+- [The Pitfalls of Verifying Floating-Point Computations](https://arxiv.org/abs/cs/0701192) — Monniaux on how compilers break floating-point semantics
+
+### Correctly Rounded Math Libraries
+
+- [RLIBM-32: High Performance Correctly Rounded Math Libraries for 32-bit Floating Point Representations](https://arxiv.org/abs/2104.04043) — Lim & Nagarakatte on polynomial approximations for correctly rounded libm
+- [One Polynomial Approximation to Produce Correctly Rounded Results of an Elementary Function for Multiple Representations and Rounding Modes](https://arxiv.org/abs/2111.12852) — POPL 2022 Distinguished Paper extending RLIBM to multiple formats
+- [An Accurate Elementary Mathematical Library for the IEEE Floating Point Standard](https://dl.acm.org/doi/10.1145/103147.103151) — Gal's "accurate tables method" for last-bit accuracy
+- [Correctly Rounded Binary-Decimal and Decimal-Binary Conversions](https://ampl.com/_archive/first-website/REFS/rounding.pdf) — Gay's classic on efficient decimal/binary conversion
+
+### ML & Low-Precision Formats
+
+- [FP8 Formats for Deep Learning](https://arxiv.org/abs/2209.05433) — Micikevicius et al. defining E4M3 and E5M2 formats for training and inference
+- [Mixed Precision Training](https://arxiv.org/abs/1710.03740) — Foundational techniques for training with half-precision floats
+
+### Testing & Comparison
+
+- [Comparing Floating Point Numbers, 2012 Edition](https://randomascii.wordpress.com/2012/02/25/comparing-floating-point-numbers-2012-edition/) — Dawson's practical guide to epsilon and ULP-based comparisons
+- [PARANOIA - Kahan's Floating Point Test Program](https://people.math.sc.edu/Burkardt/c_src/paranoia/paranoia.html) — Classic diagnostic for floating-point implementation quirks
+- [Floating-Point Arithmetic Test Programs](https://www.vinc17.net/research/fptest.en.html) — Lefèvre's collection of IEEE 754 compliance tests
 
