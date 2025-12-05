@@ -8,7 +8,7 @@ OPINE makes the trade-offs between speed and accuracy explicit and user-selectab
 
 Machine learning, AI, games, and other "close enough for rock and roll" type applications, can see *significant performance benefits* by using OPINE instead of their built-in math libraries.
 
-You think that two plus two equals four?  Well, that's, just like, your opinion, man.
+You think that you should always round-to-nearest with ties to even?  Well, you know, that's just like, uh, *your opinion*, man.
 
 [![](https://utfs.io/f/nGnSqDveMsqxmeqXINjRJyeGzNLsqiK3drCnoHp7jO1acDgB)](https://www.youtube.com/watch?v=j95kNwZw8YY)
 
