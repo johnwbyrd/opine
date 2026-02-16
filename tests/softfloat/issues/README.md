@@ -228,6 +228,58 @@ Input: {exp=0x7FFF, sig=0x4000000000000000}   (pseudo-NaN)
 
 The fix must exclude `exp = 0x7FFF` from normalization.
 
+### 3.4 Bug 4: Pseudo-Denormal Significand Overflow
+
+A **pseudo-denormal** has `exp = 0` and `J = 1` (sig >= `0x8000000000000000`).
+These are a different encoding class from unnormals (which have `exp > 0, J = 0`),
+but they trigger a related bug in `s_addMagsExtF80.c`.
+
+See: [ucb-bar/berkeley-softfloat-3#37](https://github.com/ucb-bar/berkeley-softfloat-3/issues/37)
+
+When two pseudo-denormals with `J = 1` are added, `sigA + sigB` can overflow
+64 bits.  In the equal-exponent subnormal path (lines 84-91 of the original
+`s_addMagsExtF80.c`):
+
+```c
+    sigZ = sigA + sigB;       // <-- can overflow!
+    sigZExtra = 0;
+    if ( ! expA ) {
+        normExpSig = softfloat_normSubnormalExtF80Sig( sigZ );
+        expZ = normExpSig.exp + 1;
+        sigZ = normExpSig.sig;
+        goto roundAndPack;
+    }
+```
+
+When `sigA = 0x8000000000000000` and `sigB = 0x8000000000000000`, the 64-bit
+addition wraps to `sigZ = 0`.  The carry is silently lost.
+`softfloat_normSubnormalExtF80Sig(0)` then produces undefined behavior (or
+returns a garbage result), and the output is wrong.
+
+**Concrete example:**
+
+```
+a = {exp=0x0000, sig=0x8000000000000000}   (pseudo-denormal, value = 2^(-16382))
+b = {exp=0x0000, sig=0x8000000000000000}   (same)
+
+Expected: a + b = 2^(-16381) = {exp=0x0002, sig=0x8000000000000000}
+
+What unpatched SoftFloat computes:
+  sigZ = 0x8000... + 0x8000... = 0x0000... (carry lost!)
+  normSubnormalExtF80Sig(0) → garbage
+  Result: {signExp=0x0000, sig=0x0000000000000000} = +0.0   WRONG
+```
+
+The issue also affects the case from GitHub issue #37:
+`0xFFFFFFFFFFFFFFFF + 0x0000000000000001 = carry + 0x0000...`.
+
+The fix detects the carry (via `sigZ < sigA`) and treats the result as having
+effective `exp = 1`, falling through to the `shiftRight1` label which correctly
+captures the carry bit.  See Section 4.4.
+
+Note: `s_subMagsExtF80.c` does not need this fix because subtraction of
+same-sign same-exponent significands cannot overflow.
+
 
 ## 4. Proposed Fix
 
@@ -306,12 +358,47 @@ The guard has four cases for each operand:
      and exp = 1 share the same effective exponent weight (emin = 1 - bias),
      so a partial shift of `exp - 1` compensates exactly.
 
+### 4.4 Changes to `s_addMagsExtF80.c` for Pseudo-Denormal Carry (Bug 4)
+
+In the equal-exponent subnormal path (where `expA == 0`), add carry detection
+before the call to `softfloat_normSubnormalExtF80Sig`:
+
+```c
+        sigZ = sigA + sigB;
+        sigZExtra = 0;
+        if ( ! expA ) {
+            if ( sigZ < sigA ) {
+                /*------------------------------------------------------------
+                | Significand addition carried (e.g., two pseudo-denormals
+                | with J=1).  Treat as effective exp=1 and fall through to
+                | shiftRight1, which captures the carry.
+                *------------------------------------------------------------*/
+                expZ = 1;
+                goto shiftRight1;
+            }
+            normExpSig = softfloat_normSubnormalExtF80Sig( sigZ );
+            expZ = normExpSig.exp + 1;
+            sigZ = normExpSig.sig;
+            goto roundAndPack;
+        }
+```
+
+The carry detection uses `sigZ < sigA`, which is true if and only if the
+64-bit addition wrapped.  When a carry occurs, the true 65-bit sum is
+`(1 << 64) | sigZ`.  Setting `expZ = 1` and falling through to `shiftRight1`
+produces the correct result: `shiftRight1` right-shifts by 1 (capturing the
+implicit carry as the J-bit via the OR with `0x8000000000000000`) and
+increments `expZ` to 2.
+
+This fix is only needed in `s_addMagsExtF80.c`.  Subtraction of same-sign
+values cannot produce a carry.
+
 
 ## 5. Verification
 
 ### 5.1 Targeted Test
 
-`test_unnormal_bugs.cpp` checks 40 invariants covering all three bug
+`test_unnormal_bugs.cpp` checks 45 invariants covering all four bug
 categories.  Build and run from the opine build directory:
 
 ```
@@ -327,8 +414,8 @@ g++ -std=c++17 -O2 \
 
 | SoftFloat | Passed | Failed |
 |---|---|---|
-| Unpatched | 25 | 15 |
-| Patched | 40 | 0 |
+| Unpatched | 26 | 19 |
+| Patched | 45 | 0 |
 
 ### 5.2 Full Oracle Test
 
