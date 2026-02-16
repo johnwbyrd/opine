@@ -1,4 +1,4 @@
-# OPINE Policy Redesign: Five Axes
+# OPINE Policy Redesign: Five Axes + ComputeFormat
 
 ## Problem
 
@@ -11,6 +11,13 @@ another policy that couples tightly with special-value handling. A future
 representation. The result is a set of policies with hidden dependencies
 — combinatorial in appearance but constrained in practice.
 
+Additionally, the current design has no way to express *working precision*
+— the mantissa width (and exponent width) at which arithmetic operations
+actually execute. This matters enormously on constrained platforms: a
+binary32 multiply on a 6502 costs ~700 cycles at full 24-bit mantissa
+precision, but ~18 cycles at 8-bit working precision. Precision is a
+resource you budget, not a virtue you maximize.
+
 The goal is a correct, minimal set of policies that can express:
 
 - Every IEEE 754 binary format (binary16, binary32, binary64)
@@ -22,9 +29,31 @@ The goal is a correct, minimal set of policies that can express:
   truncation rounding)
 - SWAR (SIMD Within A Register) vectorization
 - BLAS-level mixed-precision operations
+- Reduced-precision computation (fast approximate arithmetic)
+- Extended-precision computation (Kahan intermediates, compensated
+  summation)
 
 All within a single well-chosen set of policies, without combinatorial
 explosion or hidden constraints.
+
+## Architecture Overview
+
+The design has two distinct concepts:
+
+**The Five Axes** describe *what a Float value is*:
+```
+Float<Format, Encoding, Rounding, Exceptions, Platform>
+```
+
+**ComputeFormat** describes *how you compute with Float values*:
+```
+ComputeFormat<ExponentBits, MantissaBits, GuardBits>
+```
+
+ComputeFormat is NOT a sixth axis. It is a parameter of operations, not
+of values. Two identical binary32 values may be multiplied at 8-bit
+precision in one context and full 24-bit precision in another. The
+values are the same; the operations differ.
 
 ## The Five Axes
 
@@ -503,8 +532,8 @@ struct RV32IM {
 };
 
 struct CortexM0 {
-    using type_policy = type_policies::ExactWidth;
     static constexpr int machine_word_bits = 32;
+    using type_policy = type_policies::ExactWidth;
     static constexpr bool has_hardware_multiply = true;   // single-cycle 32x32
     static constexpr bool has_barrel_shifter = false;     // shift-by-1 only
     static constexpr bool has_conditional_negate = false;
@@ -596,32 +625,268 @@ Float<
 The information content is identical. The improvement is that meaning
 is now explicit and separately configurable.
 
-## UnpackedFloat
+## ComputeFormat
 
-`UnpackedFloat` is unchanged. It stores sign as a bool, exponent as an
-unsigned integer, and mantissa as an unsigned integer with space for
-the implicit bit and guard bits. This is the positive-magnitude
-decomposition of the floating-point value, regardless of how the
-value is packed.
+ComputeFormat specifies the bit widths of every field in the
+computation pipeline. It is the internal precision at which arithmetic
+operations execute.
+
+### What it is
+
+Every binary arithmetic operation has intermediate state:
+
+```
+sign:      1 bit    (XOR of input signs for multiply)
+exponent:  E bits   (sum of exponents, needs overflow room)
+mantissa:  M bits   (working precision, including implicit bit)
+guard:     G bits   (for rounding: 0, 1, or 3 depending on policy)
+```
+
+A binary32 multiply at full precision:
+
+```
+sign:      1 bit
+exponent:  10 bits  (8-bit storage + 2 overflow)
+product:   48 bits  (24 x 24 mantissa multiply)
+guard:     3 bits   (G, R, S for round-to-nearest-even)
+```
+
+Total: 62 bits = 8 bytes of intermediate state.
+
+The same multiply at 8-bit working precision:
+
+```
+sign:      1 bit
+exponent:  10 bits  (still need overflow detection)
+product:   16 bits  (8 x 8 mantissa multiply)
+guard:     0 bits   (truncation rounding)
+```
+
+Total: 27 bits = 4 bytes. Half the register pressure. On a 6502, this
+is the difference between fitting in zero-page registers and spilling
+to stack.
+
+ComputeFormat makes this explicit:
 
 ```cpp
-template <typename Format, typename Encoding, typename Rounding>
-struct UnpackedFloat {
-    bool sign;
-    exponent_type exponent;     // biased
-    mantissa_type mantissa;     // [implicit bit][stored bits][guard bits]
+template <int ExponentBits, int MantissaBits, int GuardBits>
+struct ComputeFormat {
+    static constexpr int exp_bits = ExponentBits;
+    static constexpr int mant_bits = MantissaBits;  // including implicit bit
+    static constexpr int guard_bits = GuardBits;
+
+    // Derived properties
+    static constexpr int product_bits = 2 * mant_bits;         // for multiply
+    static constexpr int aligned_bits = mant_bits + guard_bits; // for addition
+
+    // Total intermediate state (determines register pressure)
+    static constexpr int total_bits = 1 + exp_bits + product_bits;
+    static constexpr int total_bytes = (total_bits + 7) / 8;
+
+    // Type selection for each field
+    using exponent_type = uint_t<exp_bits>;
+    using mantissa_type = uint_t<mant_bits + guard_bits>;
+    using product_type = uint_t<product_bits>;
 };
 ```
 
-The unpacked representation depends on Format (field widths), Encoding
-(whether there is an implicit bit), and Rounding (how many guard bits).
-It does not depend on Exceptions or Platform. It does not depend on the
-sign encoding — after unpacking, every value is in positive-magnitude
-form with a separate sign flag.
+### What it is NOT
+
+ComputeFormat is **not an axis of the Float type**. It has no encoding
+(no sign-magnitude vs two's complement — unpacked representation is
+always sign + unsigned magnitude fields). It is never stored. It has
+no packed representation. Values in ComputeFormat are transient — they
+exist only during an operation.
+
+ComputeFormat is **not a storage format**. You cannot `pack()` into it
+or `unpack()` from it. It describes intermediate state, not persisted
+state.
+
+ComputeFormat is a **parameter of operations, not of values**. This is
+the key architectural distinction. The Float type's five axes describe
+values; the ComputeFormat describes how you compute with those values.
+
+### How it is derived
+
+ComputeFormat has sensible defaults derived from the storage Float's
+properties. Every parameter is overridable.
+
+```cpp
+template <typename FloatType>
+struct DefaultComputeFormat {
+    using F = typename FloatType::format;
+    using E = typename FloatType::encoding;
+    using R = typename FloatType::rounding;
+
+    static constexpr int exp_bits = F::exp_bits + 2;  // overflow margin
+    static constexpr int mant_bits = F::mant_bits
+                                   + (E::has_implicit_bit ? 1 : 0);
+    static constexpr int guard_bits = R::guard_bits;
+};
+```
+
+For binary32 with round-to-nearest-even: exp=10, mant=24, guard=3.
+For FP8 E5M2 with truncation: exp=7, mant=3, guard=0.
+
+### When to override
+
+The computation exponent is usually derived mechanically (storage + 2)
+and rarely needs overriding. The mantissa width and guard bits are the
+user-facing knobs. But there are real cases where the exponent must be
+wider:
+
+**Kahan extended intermediates.** Computing binary64 operations with
+x87's 15-bit exponent means intermediate results that would overflow
+an 11-bit exponent survive until the final round-to-binary64, where
+they might underflow back into range. The 4 extra exponent bits buy
+16 octaves of headroom against premature overflow.
+
+```cpp
+using ExtendedCompute = ComputeFormat<
+    15,  // exp: x87-width, 4 extra bits of range
+    64,  // mant: x87-width, 12 extra bits of precision
+    0    // guard: round-to-odd for intermediate, or explicit
+>;
+```
+
+**Accumulation.** Summing 65,536 FP16 values: the sum can be up to
+65,536x the max FP16 value. That's 16 extra bits of exponent range
+needed. An FP16 accumulator (5-bit exponent) overflows immediately.
+An FP32 accumulator (8-bit exponent) handles it.
+
+```cpp
+using AccumCompute = ComputeFormat<
+    F::exp_bits + 16,  // enough range for 65536-element sum
+    F::mant_bits + 1,  // standard mantissa
+    3                   // standard guard bits
+>;
+```
+
+**Transcendental range reduction.** Computing sin(x) for large x
+requires subtracting n*pi from x. If x is approximately 10^9 and
+the result should be approximately 10^-8, the intermediate computation
+spans 17 orders of magnitude. The computation exponent must be wide
+enough to represent both the input magnitude and the tiny reduced
+argument simultaneously.
+
+**Fast approximate on 6502.** The user specifies narrow mantissa width
+to trade accuracy for speed.
+
+```cpp
+using FastCompute = ComputeFormat<
+    10,  // exp: still need overflow detection
+    8,   // mant: only top byte (7 stored + 1 implicit)
+    0    // guard: truncation rounding, no guard bits
+>;
+// Total intermediate for multiply: 1 + 10 + 16 = 27 bits = 4 bytes
+```
+
+### ComputeFormat and platform strategy selection
+
+ComputeFormat is exactly what the Platform needs to select
+implementation strategies. The Platform selects strategies based on
+ComputeFormat, not storage Format — because when computation format
+differs from storage, the storage format gives the wrong answer.
+
+```cpp
+template <typename ComputeFormat, typename Platform>
+constexpr auto select_multiply_strategy() {
+    constexpr int bits = ComputeFormat::mant_bits;
+
+    if constexpr (Platform::has_hardware_multiply
+                  && bits <= Platform::machine_word_bits) {
+        return HardwareMultiply{};
+    } else if constexpr (2 * bits <= Platform::max_table_bits) {
+        return LookupTableMultiply<bits>{};
+    } else if constexpr (bits <= Platform::machine_word_bits) {
+        return SoftwareMultiply{};
+    } else {
+        return MultiWordMultiply<bits, Platform::machine_word_bits>{};
+    }
+}
+```
+
+Same storage format. Same platform. Different ComputeFormat. Different
+strategy:
+
+- `ComputeFormat<10, 8, 0>` on MOS6502: `2 * 8 = 16 <= max_table_bits`
+  -> lookup table multiply. 64 entries, ~18 cycles.
+- `ComputeFormat<10, 24, 3>` on MOS6502: `24 > 8 = machine_word_bits`
+  -> multi-word multiply. 3 bytes x 3 bytes, shift-and-add. ~700 cycles.
+
+### ComputeFormat and register pressure
+
+On constrained platforms, ComputeFormat determines whether an
+operation's intermediates fit in fast registers.
+
+```cpp
+template <typename ComputeFormat, typename Platform>
+constexpr bool fits_in_fast_registers() {
+    return ComputeFormat::total_bytes <= Platform::fast_register_bytes;
+}
+```
+
+On a 6502, zero page has 256 bytes. LLVM-MOS reserves some as
+"imaginary registers" (rc0-rc31 = 32 bytes). A multiply's intermediate
+state must fit in available registers, or it spills to stack
+(dramatically slower).
+
+This enables a compile-time feedback loop:
+
+1. User selects working precision
+2. ComputeFormat derives total intermediate size
+3. Platform reports whether it fits
+4. User adjusts
+
+All at compile time. The `static_assert` messages become:
+
+```
+"ComputeFormat requires 8 bytes intermediate state;
+ MOS6502 has 4 bytes of available imaginary registers.
+ Consider reducing mant_bits from 24 to 8."
+```
+
+## UnpackedFloat
+
+`UnpackedFloat` is parameterized on ComputeFormat. The ComputeFormat
+determines the field widths of every component in the unpacked
+representation.
+
+```cpp
+template <typename ComputeFormat>
+struct UnpackedFloat {
+    bool sign;
+    typename ComputeFormat::exponent_type exponent;
+    typename ComputeFormat::mantissa_type mantissa;
+};
+```
+
+The unpacked representation does not depend on Encoding — after
+unpacking, every value is in positive-magnitude form with a separate
+sign flag, regardless of whether the storage used sign-magnitude or
+two's complement.
+
+An operation unpacks from StorageFormat into an UnpackedFloat sized
+by ComputeFormat, operates, and packs from UnpackedFloat back into
+StorageFormat (or OutputFormat).
 
 ## Pack and Unpack
 
-`pack` and `unpack` are parameterized on Format, Encoding, and Rounding.
+`pack` and `unpack` bridge between the storage domain (five-axis Float)
+and the computation domain (ComputeFormat-parameterized UnpackedFloat).
+
+```cpp
+template <typename FloatType,
+          typename Compute = DefaultComputeFormat<FloatType>>
+constexpr auto unpack(typename FloatType::storage_type bits)
+    -> UnpackedFloat<Compute>;
+
+template <typename FloatType,
+          typename Compute = DefaultComputeFormat<FloatType>>
+constexpr auto pack(const UnpackedFloat<Compute>& unpacked)
+    -> typename FloatType::storage_type;
+```
+
 The Encoding determines:
 
 - Whether to perform a conditional negate on entry (TwosComplement) or
@@ -631,46 +896,209 @@ The Encoding determines:
   TrapValue/IntegerExtremes)
 - Whether the implicit bit exists and how to handle denormals
 
-```cpp
-template <typename Format, typename Encoding, typename Rounding>
-constexpr auto unpack(typename storage_type bits) -> UnpackedFloat<...>;
-
-template <typename Format, typename Encoding, typename Rounding>
-constexpr auto pack(const UnpackedFloat<...>& unpacked) -> storage_type;
-```
-
 The implementation uses `if constexpr` to select code paths based on
 Encoding sub-parameters. Paths not taken are eliminated by the compiler.
 A `Relaxed` encoding with no NaN, no Inf, and flushed denormals produces
 a `pack`/`unpack` pair with no special-value checks at all — straight
 field extraction and insertion.
 
-## Arithmetic Operations
+When the ComputeFormat mantissa width differs from the storage mantissa
+width, `unpack` narrows or widens the mantissa to match ComputeFormat.
+When they match (the default), this step is a no-op eliminated by the
+compiler.
 
-Arithmetic operations (add, subtract, multiply, divide) operate on
-`UnpackedFloat` values. They are parameterized on all five axes:
+## The Operation Pipeline
 
-- Format and Encoding determine the value range and special-value behavior
-- Rounding determines precision management (guard bits, rounding step)
-- Exceptions determine the error-reporting interface
-- Platform determines implementation strategy (lookup table vs. shift-add
-  multiply, etc.)
+Every binary arithmetic operation, fully expanded, is:
 
-```cpp
-template <typename Format, typename Encoding, typename Rounding,
-          typename Exceptions, typename Platform>
-constexpr auto multiply(
-    const UnpackedFloat<...>& a,
-    const UnpackedFloat<...>& b
-) -> result_type;  // result_type depends on Exceptions policy
+```
+Input A (StorageFormat) -> unpack -> adjust to ComputeFormat --+
+                                                                +--> compute --> round --> adjust to output --> pack -> Output
+Input B (StorageFormat) -> unpack -> adjust to ComputeFormat --+
 ```
 
-Where `result_type` is `UnpackedFloat<...>` for `Silent` exceptions,
-or `{UnpackedFloat<...>, Status}` for `ReturnStatus` exceptions.
+When all formats are the same and working precision equals storage
+precision, the "adjust" steps are identity operations and the compiler
+eliminates them. That's the common case, and it must have zero
+syntactic and runtime cost.
+
+### Mantissa adjustment
+
+The adjust-to-working-precision step is a mantissa truncation (for
+narrowing) or zero-extension (for widening):
+
+```cpp
+template <typename StorageFormat, typename ComputeFormat>
+constexpr auto adjust_mantissa(typename StorageFormat::mantissa_type m) {
+    constexpr int storage_mant = StorageFormat::mant_bits;
+    constexpr int compute_mant = ComputeFormat::mant_bits;
+
+    if constexpr (compute_mant >= storage_mant) {
+        return static_cast<typename ComputeFormat::mantissa_type>(m);
+    } else {
+        constexpr int shift = storage_mant - compute_mant;
+        return static_cast<typename ComputeFormat::mantissa_type>(
+            (m >> shift) << shift);  // zero out low bits
+    }
+}
+```
+
+When the shift is zero, this compiles to nothing.
+
+### Rounding interaction
+
+Working precision interacts with Rounding through bit positions, not
+through the Rounding policy itself. The policy is unchanged; the bits
+it operates on change.
+
+If working precision is 8 bits and the output mantissa is 24 bits, the
+product is 16 bits wide. Placed in a 24-bit output mantissa, the low
+8 bits are zero. No rounding needed; the result is exact at the output
+precision.
+
+If working precision is 20 bits, the product is 40 bits. The output
+mantissa is 24 bits. The guard/round/sticky bits come from the 16 bits
+being discarded. The rounding policy applies normally to
+`(2 * working_bits) -> output_mantissa_bits`.
+
+## Operation Signatures: Progressive Disclosure
+
+Operations are presented in four levels of progressive complexity.
+Each level adds one knob. Most users never go past Level 0.
+
+### Level 0: Same type, full precision
+
+```cpp
+template <typename FloatType>
+constexpr FloatType multiply(FloatType a, FloatType b);
+```
+
+Usage:
+```cpp
+using F = Float<IEEE_Layout<8, 23>, encodings::IEEE754>;
+F a, b;
+F c = multiply(a, b);  // full 24-bit mantissa multiply
+```
+
+This is the default. No ceremony. Level 0 calls Level 1 with
+`WorkingMantBits = full precision`.
+
+### Level 1: Same type, specified working precision
+
+```cpp
+template <int WorkingMantBits, typename FloatType>
+constexpr FloatType multiply(FloatType a, FloatType b);
+```
+
+Usage:
+```cpp
+F c = multiply<8>(a, b);  // 8-bit mantissa multiply, result is binary32
+```
+
+Implementation when `WorkingMantBits < full_mantissa_bits`:
+
+1. Unpack a and b
+2. Right-shift each mantissa by `(full - working)` bits -> truncated
+3. Multiply truncated mantissas -> product is `2 * working` bits wide
+4. Left-shift product to align with output mantissa position
+5. Round per rounding policy (G/R/S bits from product, relative to
+   output mantissa width)
+6. Pack
+
+When `WorkingMantBits` equals the full mantissa width, steps 2 and 4
+vanish — the compiler eliminates them because the shift amounts are
+zero. Zero cost.
+
+Internally, Level 1 constructs a ComputeFormat from the Float type's
+properties plus the mantissa override:
+
+```cpp
+// working_mantissa<N> internally constructs:
+ComputeFormat<
+    FloatType::format::exp_bits + 2,  // derived exponent
+    N,                                 // user-specified mantissa
+    FloatType::rounding::guard_bits    // from rounding policy
+>
+```
+
+### Level 2: Different input and output formats
+
+```cpp
+template <typename OutFloat, typename InFloat,
+          int WorkingMantBits = /* InFloat's full precision */>
+constexpr OutFloat multiply(InFloat a, InFloat b);
+```
+
+Usage:
+```cpp
+using In  = Float<IEEE_Layout<8, 23>, encodings::IEEE754>;
+using Out = Float<IEEE_Layout<5, 10>, encodings::IEEE754>;
+
+In a, b;
+Out c = multiply<Out>(a, b);  // binary32 inputs, FP16 output
+```
+
+This is "arithmetic with conversion." The multiply uses In's mantissa
+width (or a specified working width), but the result is rounded and
+packed into Out's format. This avoids a separate multiply-then-convert,
+which would round twice (once to In's precision, once to Out's).
+
+### Level 3: Full control with explicit ComputeFormat
+
+```cpp
+template <typename InFloat,
+          typename OutFloat = InFloat,
+          typename Compute  = DefaultComputeFormat<InFloat>>
+constexpr OutFloat multiply(InFloat a, InFloat b);
+```
+
+Usage:
+```cpp
+using FastCompute = ComputeFormat<10, 8, 0>;
+auto c = multiply<MyFloat, MyFloat, FastCompute>(a, b);
+```
+
+This is the fully general form. Most users never write it. The other
+levels are convenience wrappers that construct ComputeFormats
+automatically.
+
+### Working precision per operation
+
+Each operation independently specifies its working precision. This
+composes correctly for operations with different cost profiles:
+
+```cpp
+// On a 6502: multiply is expensive, addition is cheap
+auto product = multiply<8>(a, b);    // 8-bit mantissa, ~18 cycles
+auto sum = add(product, c);          // full-precision add, cheap multi-byte ADC
+```
+
+### The narrowing/widening asymmetry
+
+There is an important asymmetry between reduced and extended precision
+intermediates:
+
+**Narrowing** (working precision < storage precision): The result fits
+in the storage format. The low mantissa bits are zero, but the bit
+pattern is a valid value in the original format. No type change needed.
+The operation takes a Float and returns a Float of the same type. This
+is expressed as a parameter on the operation (`working_mantissa<8>`).
+
+**Widening** (working precision > storage precision): The intermediate
+result has more precision than the storage format can hold. If you want
+to keep that precision through a chain of operations, you need a
+different type — one with more mantissa bits. Converting back to storage
+format discards the extra precision (which is the whole point of Kahan's
+"round only the final result"). This requires explicit conversion to a
+wider Float type, operating in that type, and converting back.
+
+This asymmetry reflects a physical constraint: a narrowed result fits in
+the original storage. A widened result doesn't. You can't return a
+48-bit mantissa in a 32-bit word. The type must change.
 
 ## BLAS-Level Operations
 
-BLAS operations are parameterized on multiple Float types, not one.
+BLAS operations compose multiple Float types with ComputeFormat.
 The accumulator precision is a property of the operation, not of the
 individual float format.
 
@@ -707,6 +1135,29 @@ The accumulator uses IEEE 754 FP16 with proper rounding to maintain
 accuracy during accumulation. The platform tells the code generator
 that hardware multiply is available and registers are 32 bits (so
 SWAR can pack 4 FP8 values or 2 FP16 values per register).
+
+ComputeFormat adds another dimension: the multiply within the GEMM
+inner loop can use a reduced ComputeFormat even when the accumulator
+is wide:
+
+```cpp
+// FP8 inputs, cheap 4-bit multiply, but accumulate in FP32
+template <typename InputFloat,
+          typename AccumulatorFloat,
+          typename OutputFloat,
+          typename MultiplyCompute = DefaultComputeFormat<InputFloat>,
+          typename Exceptions      = exceptions::Silent,
+          typename Platform        = platforms::Default>
+void gemm(int M, int N, int K,
+          const typename InputFloat::storage_type* A,
+          const typename InputFloat::storage_type* B,
+          typename OutputFloat::storage_type* C);
+```
+
+The 6502 dot product case illustrates the per-operation precision
+difference: cheap 8-bit multiplies (multiply is expensive on 6502)
+but full-precision addition (addition is cheap — it's just multi-byte
+ADC).
 
 ## SWAR in BLAS Kernels
 
@@ -746,6 +1197,63 @@ the intermediate results are wider than the inputs and shift amounts vary
 per lane. The realistic SWAR path for arithmetic is: batch unpack,
 per-element multiply, batch repack.
 
+## Working Precision Patterns
+
+Every real-world pattern where computation precision differs from
+storage precision is expressible as a ComputeFormat:
+
+| Pattern | Input | ComputeFormat | Output | Who |
+|---|---|---|---|---|
+| Standard | binary32 | Default (exp=10, mant=24, G=3) | binary32 | Normal code |
+| Fast approximate | binary32 | exp=10, mant=8, G=0 | binary32 | 6502 game |
+| Kahan intermediate | binary32 | exp=15, mant=64, G=0 | binary32 | x87, scientific |
+| Mixed precision fwd | FP16 | Default (exp=7, mant=11, G=3) | FP16 | ML training |
+| Quantized inference | FP8 E4M3 | exp=6, mant=4, G=0 | FP8 E4M3 | ML inference |
+| Format conversion | binary32 | Default | FP16 | Quantization |
+| bfloat16 truncation | binary32 | exp=10, mant=8, G=0 | bfloat16 | ML weight compression |
+| TensorFloat-32 | binary32 | exp=10, mant=11, G=3 | binary32 | A100 matmul |
+| Progressive RLibm | float32 | exp=10, mant=26, G=0 | float32 | RLibm-Prog |
+
+Note that bfloat16 is literally binary32 with the mantissa trimmed from
+23 bits to 7. TensorFloat-32 is binary32 trimmed to 10. These are the
+most commercially successful formats in ML, and they are all "same
+exponent, fewer mantissa bits" — a natural ComputeFormat reduction.
+
+## Chained Reduced-Precision Operations
+
+Reduced-precision operations compose correctly under chaining:
+
+```cpp
+auto t1 = multiply<8>(a, b);   // low 16 bits of mantissa are zero
+auto t2 = multiply<8>(t1, c);  // truncates t1 to top 8 bits (which are valid)
+```
+
+The second multiply truncates t1's mantissa to the top 8 bits — which
+are the only meaningful bits anyway, since the rest are zeros from the
+first multiply. The truncation discards nothing of value. If you've
+committed to 8-bit working precision, each operation sees 8 meaningful
+bits in and produces 8 meaningful bits out.
+
+## Testing and Oracle Implications
+
+The TDD oracle computes the mathematically exact result via MPFR, then
+applies policies to produce the correct output bit pattern. ComputeFormat
+is a policy that affects which bits of the output are meaningful.
+
+The oracle should compute two things for a reduced-precision operation:
+
+1. The bit pattern that the reduced-precision operation should produce
+   (the "correct" result for this ComputeFormat)
+2. The ULP distance between this result and the full-precision result
+   (the accuracy cost of the precision reduction)
+
+This lets tests verify both "the implementation matches the spec" and
+"the user knows how much accuracy they're giving up."
+
+For a full-precision operation, (1) and (2) converge — the
+full-precision result IS the correct result, and the ULP distance is
+the inherent rounding error of the format.
+
 ## Refactoring Path from Current Code
 
 The current code base contains: `FormatDescriptor`, `UnpackedFloat`,
@@ -779,12 +1287,28 @@ The refactoring:
 7. **Add Platform** with the hardware capability flags. Initially
    only `Generic32` is needed.
 
-8. **Update `UnpackedFloat`** to take Encoding as a template parameter
-   (for the implicit-bit decision).
+8. **Create `ComputeFormat`** with the three parameters (exp_bits,
+   mant_bits, guard_bits) and the `DefaultComputeFormat` derivation.
 
-9. **Update `pack` and `unpack`** to take Encoding as a template
-   parameter and dispatch on `sign_encoding`, `nan_encoding`,
-   `inf_encoding`, and `denormal_mode` via `if constexpr`.
+9. **Reparameterize `UnpackedFloat`** on `ComputeFormat` instead of
+   on Format + Rounding. The field widths come from ComputeFormat;
+   the Format and Rounding inform how ComputeFormat is derived.
+
+10. **Update `pack` and `unpack`** to bridge between the storage domain
+    (five-axis Float) and the computation domain (ComputeFormat). They
+    take Encoding as a template parameter and dispatch on
+    `sign_encoding`, `nan_encoding`, `inf_encoding`, and `denormal_mode`
+    via `if constexpr`. They handle mantissa narrowing/widening when
+    ComputeFormat differs from storage.
+
+11. **Design operation signatures** at all four levels of progressive
+    disclosure. Operations take ComputeFormat as a parameter (defaulting
+    to `DefaultComputeFormat<FloatType>`).
+
+12. **Wire Platform strategy selection** to key off ComputeFormat, not
+    storage Format. The Platform uses `ComputeFormat::mant_bits` to
+    select multiply strategy, `ComputeFormat::total_bytes` to check
+    register pressure.
 
 Nothing is deleted. The existing implementations of `TowardZero`,
 `ToNearestTiesToEven`, the type selection policies, and the denormal
@@ -815,6 +1339,10 @@ maps to the five axes.
 Every row in this table is fully specified by choosing a point on each
 axis. No row requires information outside the five axes to determine
 its behavior.
+
+ComputeFormat is orthogonal to this table. Any row can be computed at
+any working precision. The table describes storage types; ComputeFormat
+describes how arithmetic executes on those types.
 
 ## Compile-Time Constraint Enforcement
 
@@ -862,9 +1390,24 @@ violated constraint. Users see this only if they write a custom
 encoding with contradictory sub-parameters. Predefined bundles
 are pre-validated and cannot trigger these errors.
 
+ComputeFormat has its own constraints:
+
+```cpp
+template <typename CF>
+concept ValidComputeFormat = requires {
+    { CF::exp_bits } -> std::convertible_to<int>;
+    { CF::mant_bits } -> std::convertible_to<int>;
+    { CF::guard_bits } -> std::convertible_to<int>;
+} &&
+    (CF::exp_bits >= 2) &&     // minimum for overflow detection
+    (CF::mant_bits >= 1) &&    // at least the implicit bit
+    (CF::guard_bits >= 0);
+```
+
 ## What This Design Does Not Cover
 
-This document defines the policy decomposition. It does not specify:
+This document defines the policy decomposition and ComputeFormat.
+It does not specify:
 
 - The implementation of any arithmetic operation (add, subtract,
   multiply, divide). Those will be designed separately once the
@@ -883,10 +1426,17 @@ This document defines the policy decomposition. It does not specify:
   the individual-float level. It will need its own abstraction that
   composes with the Float type defined here.
 
+- The specific `working_mantissa<N>` convenience syntax. The exact
+  API surface for specifying ComputeFormat overrides at the call
+  site will be designed during arithmetic operation implementation.
+
 ## Summary
 
-Five axes. Every floating-point format that has ever existed or will
-ever exist is a point in this space:
+Five axes describe Float values. ComputeFormat describes how you
+compute with them.
+
+**The Five Axes** — every floating-point format that has ever existed
+or will ever exist is a point in this space:
 
 1. **Format**: Bit geometry. Where the fields are. Pure structure.
 2. **Encoding**: What bit patterns mean. Sign encoding, implicit bit,
@@ -900,12 +1450,29 @@ ever exist is a point in this space:
    width, instruction availability. Determines SWAR lane count and
    implementation strategy as derived properties.
 
+**ComputeFormat** — how arithmetic operations execute:
+
+- Specifies exponent bits, mantissa bits, and guard bits for
+  intermediate computation state.
+- Usually derived from the storage Float's properties
+  (DefaultComputeFormat), but overridable.
+- Parameter of operations, not of values. A Float type has fixed
+  axes; the same Float can be computed at any working precision.
+- Determines Platform strategy selection (which multiply algorithm)
+  and register pressure (whether intermediates fit in fast registers).
+- Enables progressive disclosure: Level 0 (default precision) through
+  Level 3 (explicit ComputeFormat) with zero cost at each level.
+- Precision is a resource you budget, not a virtue you maximize.
+
 SWAR and vectorization are not a policy axis — they are derived from
 Format (lane width) and Platform (register width). BLAS operations
-compose multiple Float types (input, accumulator, output) without
-requiring additional policy machinery at the float level.
+compose multiple Float types (input, accumulator, output) and can
+specify ComputeFormat for the inner arithmetic without requiring
+additional policy machinery at the float level.
 
 The refactoring from current code is mechanical: split FormatDescriptor,
 merge DenormalPolicy into Encoding, move TypeSelectionPolicy into
-Platform. No existing implementations are deleted. The policy count
-goes from "4 and growing" to "5 and complete."
+Platform, add ComputeFormat as a new concept, reparameterize
+UnpackedFloat on ComputeFormat. No existing implementations are
+deleted. The policy count goes from "4 and growing" to "5 and
+complete," with ComputeFormat as a composable operation parameter.
