@@ -1,0 +1,54 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+CTestTestfile.cmake
+_deps/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Compiled binaries
+*.exe
+*.out
+*.app
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Test outputs
+Testing/
+test_*.log
+
+# Package managers
+.cache/
+_build/
+.conan/
+
+# Documentation builds
+docs/_build/
+docs/html/
+docs/latex/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+.*.kate-swp
