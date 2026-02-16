@@ -14,5 +14,8 @@ add_test(NAME test_softfloat_smoke COMMAND test_softfloat_smoke)
 
 # Oracle tests (only if MPFR available)
 if(OPINE_HAS_ORACLE)
-    # Placeholder: oracle tests will be added in TDD steps 1-3
+    add_executable(test_mpfr_exact oracle/test_mpfr_exact.cpp)
+    target_link_libraries(test_mpfr_exact PRIVATE opine softfloat MPFR::MPFR)
+    target_include_directories(test_mpfr_exact PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_mpfr_exact COMMAND test_mpfr_exact)
 endif()
