@@ -27,7 +27,7 @@ A **normal** extFloat80 value has: biased exponent in [1, 0x7FFE] and J = 1.
 An **unnormal** is an extFloat80 bit pattern where the biased exponent is
 non-zero (and not max) but J = 0.  The exponent says "normal" but the
 significand says "not."  These are architecturally invalid ("unsupported") on
-post-8087 x87 hardware --- the 80387 and later raise #IA (Invalid Arithmetic
+post-8087 x87 hardware -- the 80387 and later raise #IA (Invalid Arithmetic
 Operand) when they encounter one.
 
 There are three classes of non-standard extFloat80 encodings (all have J = 0):
@@ -37,6 +37,13 @@ There are three classes of non-standard extFloat80 encodings (all have J = 0):
 | **Unnormal** | 1 to 0x7FFE | Non-zero exp, J = 0. The focus of this report. |
 | **Pseudo-denormal** | 0 | exp = 0 with sig >= 0x8000000000000000. Covered by [issue #37](https://github.com/ucb-bar/berkeley-softfloat-3/issues/37). |
 | **Pseudo-NaN/Inf** | 0x7FFF | Max exp, J = 0. Must be treated as NaN. |
+
+It is critical to note that, even though Intel 80387 and later trap on 
+unnormals, **unnormals are valid numbers**, both in theory and in practice on
+some hardware.  Consider for example [the original Intel 8087 patent](https://patents.google.com/patent/USRE33629E),
+which goes into some detail about unnormals and how the hardware handles them:
+"The file format has a explicit leading bit in the significand and thus allows
+unnormalized as well as normalized arithmetic."
 
 ### 1.3 Mathematical Value of an Unnormal
 
