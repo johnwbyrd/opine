@@ -19,11 +19,12 @@ template <typename FloatType> struct SoftFloatOps;
 
 template <> struct SoftFloatOps<opine::float16> {
   using SfType = float16_t;
+  using BitsType = opine::float16::storage_type;
 
-  static SfType fromBits(uint64_t Bits) {
+  static SfType fromBits(BitsType Bits) {
     return {static_cast<uint16_t>(Bits)};
   }
-  static uint64_t toBits(SfType V) { return V.v; }
+  static BitsType toBits(SfType V) { return BitsType(V.v); }
 
   static SfType add(SfType A, SfType B) { return f16_add(A, B); }
   static SfType sub(SfType A, SfType B) { return f16_sub(A, B); }
@@ -33,11 +34,12 @@ template <> struct SoftFloatOps<opine::float16> {
 
 template <> struct SoftFloatOps<opine::float32> {
   using SfType = float32_t;
+  using BitsType = opine::float32::storage_type;
 
-  static SfType fromBits(uint64_t Bits) {
+  static SfType fromBits(BitsType Bits) {
     return {static_cast<uint32_t>(Bits)};
   }
-  static uint64_t toBits(SfType V) { return V.v; }
+  static BitsType toBits(SfType V) { return BitsType(V.v); }
 
   static SfType add(SfType A, SfType B) { return f32_add(A, B); }
   static SfType sub(SfType A, SfType B) { return f32_sub(A, B); }
@@ -47,9 +49,12 @@ template <> struct SoftFloatOps<opine::float32> {
 
 template <> struct SoftFloatOps<opine::float64> {
   using SfType = float64_t;
+  using BitsType = opine::float64::storage_type;
 
-  static SfType fromBits(uint64_t Bits) { return {Bits}; }
-  static uint64_t toBits(SfType V) { return V.v; }
+  static SfType fromBits(BitsType Bits) {
+    return {static_cast<uint64_t>(Bits)};
+  }
+  static BitsType toBits(SfType V) { return BitsType(V.v); }
 
   static SfType add(SfType A, SfType B) { return f64_add(A, B); }
   static SfType sub(SfType A, SfType B) { return f64_sub(A, B); }
@@ -57,11 +62,52 @@ template <> struct SoftFloatOps<opine::float64> {
   static SfType div(SfType A, SfType B) { return f64_div(A, B); }
 };
 
+template <> struct SoftFloatOps<opine::extFloat80> {
+  using SfType = extFloat80_t;
+  using BitsType = opine::extFloat80::storage_type;
+
+  static SfType fromBits(BitsType Bits) {
+    SfType R;
+    R.signif = static_cast<uint64_t>(Bits);
+    R.signExp = static_cast<uint16_t>(Bits >> 64);
+    return R;
+  }
+  static BitsType toBits(SfType V) {
+    return (BitsType(V.signExp) << 64) | BitsType(V.signif);
+  }
+
+  static SfType add(SfType A, SfType B) { return extF80_add(A, B); }
+  static SfType sub(SfType A, SfType B) { return extF80_sub(A, B); }
+  static SfType mul(SfType A, SfType B) { return extF80_mul(A, B); }
+  static SfType div(SfType A, SfType B) { return extF80_div(A, B); }
+};
+
+template <> struct SoftFloatOps<opine::float128> {
+  using SfType = float128_t;
+  using BitsType = opine::float128::storage_type;
+
+  static SfType fromBits(BitsType Bits) {
+    SfType R;
+    R.v[0] = static_cast<uint64_t>(Bits);
+    R.v[1] = static_cast<uint64_t>(Bits >> 64);
+    return R;
+  }
+  static BitsType toBits(SfType V) {
+    return (BitsType(V.v[1]) << 64) | BitsType(V.v[0]);
+  }
+
+  static SfType add(SfType A, SfType B) { return f128_add(A, B); }
+  static SfType sub(SfType A, SfType B) { return f128_sub(A, B); }
+  static SfType mul(SfType A, SfType B) { return f128_mul(A, B); }
+  static SfType div(SfType A, SfType B) { return f128_div(A, B); }
+};
+
 // Wrap a SoftFloat binary op into a harness-compatible callable.
 template <typename FloatType, typename SfBinOp>
 auto makeSoftFloatOp(SfBinOp SfFn) {
   using Sf = SoftFloatOps<FloatType>;
-  return [SfFn](uint64_t A, uint64_t B) -> TestOutput {
+  using BitsType = typename Sf::BitsType;
+  return [SfFn](BitsType A, BitsType B) -> TestOutput<BitsType> {
     softfloat_exceptionFlags = 0;
     auto Sa = Sf::fromBits(A);
     auto Sb = Sf::fromBits(B);

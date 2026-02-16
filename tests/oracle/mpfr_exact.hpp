@@ -5,14 +5,19 @@
 //
 // Provides:
 //   MpfrFloat        — RAII wrapper around mpfr_t
-//   decode_to_mpfr   — Convert any OPINE bit pattern to its exact MPFR value
-//   mpfr_exact_*     — Exact arithmetic at 256-bit precision
+//   decodeToMpfr     — Convert any OPINE bit pattern to its exact MPFR value
+//   mpfrExactOp      — Exact arithmetic at 256-bit precision
 //   mpfrRoundToFormat — Round MPFR value to any IEEE 754-style format
+//
+// All bit-pattern logic operates on BitsType (from FloatType::storage_type).
+// The ONLY fixed-width C types appear at MPFR API boundaries, bridged by
+// bitsToMpz / mpzToBits helpers that work for any width.
 
 #include <cstdint>
 #include <cstring>
 #include <utility>
 
+#include <gmp.h>
 #include <mpfr.h>
 
 #include "opine/opine.hpp"
@@ -77,99 +82,122 @@ private:
 };
 
 // ===================================================================
-// Bit extraction helper
+// Width-agnostic BitsType <-> mpz_t conversion
 // ===================================================================
 
 namespace detail {
 
+template <typename BitsType>
+void bitsToMpz(mpz_t Z, BitsType Val) {
+  constexpr int NumBytes = sizeof(BitsType);
+  unsigned char Bytes[NumBytes];
+  for (int I = 0; I < NumBytes; ++I) {
+    Bytes[I] = static_cast<unsigned char>(Val & BitsType{0xFF});
+    Val >>= 8;
+  }
+  mpz_import(Z, NumBytes, -1, 1, 0, 0, Bytes);
+}
+
+template <typename BitsType>
+BitsType mpzToBits(const mpz_t Z) {
+  constexpr int NumBytes = sizeof(BitsType);
+  unsigned char Bytes[NumBytes] = {};
+  mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
+  BitsType Val = 0;
+  for (int I = NumBytes - 1; I >= 0; --I)
+    Val = (Val << 8) | BitsType(Bytes[I]);
+  return Val;
+}
+
 // Extract a field of `Width` bits starting at bit `Offset` from `Bits`.
-inline constexpr uint64_t extractField(uint64_t Bits, int Offset, int Width) {
+template <typename BitsType>
+inline constexpr BitsType extractField(BitsType Bits, int Offset, int Width) {
   if (Width == 0)
-    return 0;
-  return (Bits >> Offset) & ((uint64_t{1} << Width) - 1);
+    return BitsType{0};
+  return (Bits >> Offset) & ((BitsType{1} << Width) - 1);
 }
 
 } // namespace detail
 
 // ===================================================================
-// decode_to_mpfr — Convert a bit pattern to its exact MPFR value
+// decodeToMpfr — Convert a bit pattern to its exact MPFR value
 // ===================================================================
 
-// Decodes a raw bit pattern into an MpfrFloat representing the exact
-// mathematical value. Handles all OPINE encoding types: sign-magnitude,
-// two's complement, one's complement, and all special value schemes.
-//
-// Template parameter FloatType must be an opine::Float instantiation
-// (provides format, encoding, and exponent_bias).
 template <typename FloatType>
-MpfrFloat decodeToMpfr(uint64_t Bits) {
+MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   using Fmt = typename FloatType::format;
   using Enc = typename FloatType::encoding;
+  using BitsType = typename FloatType::storage_type;
 
   constexpr int TotalBits = Fmt::total_bits;
-  constexpr uint64_t WordMask =
-      TotalBits >= 64 ? ~uint64_t{0} : (uint64_t{1} << TotalBits) - 1;
-
-  Bits &= WordMask;
+  if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+    constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
+    Bits &= WordMask;
+  }
 
   MpfrFloat Result;
 
   // ------------------------------------------------------------------
-  // Phase 1: Check for special values that are identified by their
-  // complete bit pattern (before field extraction).
+  // Phase 1: Check for special values identified by complete bit pattern
   // ------------------------------------------------------------------
 
-  // Two's complement trap value NaN: the most-negative integer (0x80...0)
   if constexpr (Enc::nan_encoding == NanEncoding::TrapValue) {
-    constexpr uint64_t TrapValue = uint64_t{1} << (TotalBits - 1);
+    constexpr BitsType TrapValue = BitsType{1} << (TotalBits - 1);
     if (Bits == TrapValue) {
       mpfr_set_nan(Result);
       return Result;
     }
   }
 
-  // Two's complement integer-extreme infinities
   if constexpr (Enc::inf_encoding == InfEncoding::IntegerExtremes) {
-    // +Inf: max positive signed integer (0x7F...F)
-    constexpr uint64_t PosInf = (uint64_t{1} << (TotalBits - 1)) - 1;
-    // -Inf: two's complement of +Inf (0x80...1)
-    constexpr uint64_t NegInf = WordMask - PosInf + 1;
-
-    if (Bits == PosInf) {
-      mpfr_set_inf(Result, +1);
-      return Result;
-    }
-    if (Bits == NegInf) {
-      mpfr_set_inf(Result, -1);
-      return Result;
+    constexpr BitsType PosInf = (BitsType{1} << (TotalBits - 1)) - 1;
+    if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+      constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
+      constexpr BitsType NegInf = (WordMask - PosInf + 1) & WordMask;
+      if (Bits == PosInf) {
+        mpfr_set_inf(Result, +1);
+        return Result;
+      }
+      if (Bits == NegInf) {
+        mpfr_set_inf(Result, -1);
+        return Result;
+      }
+    } else {
+      constexpr BitsType NegInf = ~PosInf + 1;
+      if (Bits == PosInf) {
+        mpfr_set_inf(Result, +1);
+        return Result;
+      }
+      if (Bits == NegInf) {
+        mpfr_set_inf(Result, -1);
+        return Result;
+      }
     }
   }
 
-  // NegativeZeroBitPattern NaN (E4M3FNUZ): sign=1, exp=0, mant=0
   if constexpr (Enc::nan_encoding == NanEncoding::NegativeZeroBitPattern) {
-    uint64_t RawSign =
+    BitsType RawSign =
         detail::extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
-    uint64_t RawExp =
+    BitsType RawExp =
         detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    uint64_t RawMant =
+    BitsType RawMant =
         detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
-    if (RawSign == 1 && RawExp == 0 && RawMant == 0) {
+    if (RawSign != 0 && RawExp == 0 && RawMant == 0) {
       mpfr_set_nan(Result);
       return Result;
     }
   }
 
   // ------------------------------------------------------------------
-  // Phase 2: Determine sign and extract magnitude fields.
+  // Phase 2: Determine sign and extract magnitude fields
   // ------------------------------------------------------------------
 
-  uint64_t RawSign =
+  BitsType RawSign =
       detail::extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
   bool IsNegative = false;
 
-  // The magnitude exponent and mantissa, after accounting for sign encoding
-  uint64_t MagExp;
-  uint64_t MagMant;
+  BitsType MagExp;
+  BitsType MagMant;
 
   if constexpr (Enc::sign_encoding == SignEncoding::SignMagnitude) {
     IsNegative = (RawSign != 0);
@@ -178,8 +206,13 @@ MpfrFloat decodeToMpfr(uint64_t Bits) {
   } else if constexpr (Enc::sign_encoding == SignEncoding::TwosComplement) {
     IsNegative = (RawSign != 0);
     if (IsNegative) {
-      // Two's complement negate the entire word to get positive form
-      uint64_t Positive = (WordMask - Bits + 1) & WordMask;
+      BitsType Positive;
+      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+        constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
+        Positive = (WordMask - Bits + 1) & WordMask;
+      } else {
+        Positive = ~Bits + 1;
+      }
       MagExp = detail::extractField(Positive, Fmt::exp_offset, Fmt::exp_bits);
       MagMant =
           detail::extractField(Positive, Fmt::mant_offset, Fmt::mant_bits);
@@ -190,9 +223,8 @@ MpfrFloat decodeToMpfr(uint64_t Bits) {
   } else if constexpr (Enc::sign_encoding == SignEncoding::OnesComplement) {
     IsNegative = (RawSign != 0);
     if (IsNegative) {
-      // One's complement: bitwise invert the exp and mant fields
-      constexpr uint64_t ExpMask = (uint64_t{1} << Fmt::exp_bits) - 1;
-      constexpr uint64_t MantMask = (uint64_t{1} << Fmt::mant_bits) - 1;
+      constexpr BitsType ExpMask = (BitsType{1} << Fmt::exp_bits) - 1;
+      constexpr BitsType MantMask = (BitsType{1} << Fmt::mant_bits) - 1;
       MagExp =
           detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits) ^ ExpMask;
       MagMant =
@@ -206,24 +238,47 @@ MpfrFloat decodeToMpfr(uint64_t Bits) {
 
   // ------------------------------------------------------------------
   // Phase 3: Check for special values identified by field values
-  // (IEEE 754-style reserved exponent).
   // ------------------------------------------------------------------
 
-  constexpr uint64_t ExpMax = (uint64_t{1} << Fmt::exp_bits) - 1;
+  constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
 
-  // Reserved exponent NaN: all-ones exponent, non-zero mantissa
-  if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-    if (MagExp == ExpMax && MagMant != 0) {
-      mpfr_set_nan(Result);
-      return Result;
+  // Inf must be checked before NaN for explicit-bit formats, because
+  // Inf has a non-zero mantissa field (J=1, frac=0) which would
+  // otherwise be caught by the NaN check (MagMant != 0).
+  if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
+    if constexpr (Enc::has_implicit_bit) {
+      if (MagExp == ExpMax && MagMant == 0) {
+        mpfr_set_inf(Result, IsNegative ? -1 : +1);
+        return Result;
+      }
+    } else {
+      constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
+      constexpr BitsType FracMask = JBit - 1;
+      if (MagExp == ExpMax && (MagMant & JBit) != 0 &&
+          (MagMant & FracMask) == 0) {
+        mpfr_set_inf(Result, IsNegative ? -1 : +1);
+        return Result;
+      }
     }
   }
 
-  // Reserved exponent Inf: all-ones exponent, zero mantissa
-  if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-    if (MagExp == ExpMax && MagMant == 0) {
-      mpfr_set_inf(Result, IsNegative ? -1 : +1);
-      return Result;
+  if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
+    if constexpr (Enc::has_implicit_bit) {
+      if (MagExp == ExpMax && MagMant != 0) {
+        mpfr_set_nan(Result);
+        return Result;
+      }
+    } else {
+      // Explicit-bit: NaN = max exp with J=1 and frac!=0, or J=0 (pseudo-NaN)
+      if (MagExp == ExpMax) {
+        constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
+        constexpr BitsType FracMask = JBit - 1;
+        bool IsInf = (MagMant & JBit) != 0 && (MagMant & FracMask) == 0;
+        if (!IsInf && MagMant != 0) {
+          mpfr_set_nan(Result);
+          return Result;
+        }
+      }
     }
   }
 
@@ -235,7 +290,7 @@ MpfrFloat decodeToMpfr(uint64_t Bits) {
     if constexpr (Enc::negative_zero == NegativeZero::Exists) {
       mpfr_set_zero(Result, IsNegative ? -1 : +1);
     } else {
-      mpfr_set_zero(Result, +1); // always +0
+      mpfr_set_zero(Result, +1);
     }
     return Result;
   }
@@ -245,33 +300,38 @@ MpfrFloat decodeToMpfr(uint64_t Bits) {
   // ------------------------------------------------------------------
 
   constexpr int Bias = FloatType::exponent_bias;
-  intmax_t Exponent;
-  uintmax_t Mantissa;
+  mpfr_exp_t Exponent;
+  BitsType Mantissa;
 
   if constexpr (Enc::has_implicit_bit) {
     if (MagExp == 0) {
       // Denormal: no implicit bit, minimum exponent
-      // value = (-1)^s * mant * 2^(1 - bias - mant_bits)
       Exponent = 1 - Bias - Fmt::mant_bits;
       Mantissa = MagMant;
     } else {
       // Normal: implicit leading 1
-      // value = (-1)^s * (2^mant_bits + mant) * 2^(exp - bias - mant_bits)
-      Exponent =
-          static_cast<intmax_t>(MagExp) - Bias - Fmt::mant_bits;
-      Mantissa = (uintmax_t{1} << Fmt::mant_bits) | MagMant;
+      Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
+                 Fmt::mant_bits;
+      Mantissa = (BitsType{1} << Fmt::mant_bits) | MagMant;
     }
   } else {
-    // No implicit bit (e.g., PDP10, CDC6600): mantissa is stored explicitly.
-    // The leading bit of the mantissa IS the integer bit.
-    // value = (-1)^s * mant * 2^(exp - bias - (mant_bits - 1))
-    Exponent =
-        static_cast<intmax_t>(MagExp) - Bias - (Fmt::mant_bits - 1);
+    // No implicit bit (e.g., extFloat80): mantissa stored explicitly
+    if (MagExp == 0) {
+      // Denormal: minimum exponent (same rule as implicit-bit)
+      Exponent = 1 - Bias - (Fmt::mant_bits - 1);
+    } else {
+      Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
+                 (Fmt::mant_bits - 1);
+    }
     Mantissa = MagMant;
   }
 
-  // Set result = Mantissa * 2^Exponent (exact at 256-bit precision)
-  mpfr_set_uj_2exp(Result, Mantissa, Exponent, MPFR_RNDN);
+  // Convert mantissa to mpz, then to MPFR with exponent — one path, any width
+  mpz_t Z;
+  mpz_init(Z);
+  detail::bitsToMpz(Z, Mantissa);
+  mpfr_set_z_2exp(Result, Z, Exponent, MPFR_RNDN);
+  mpz_clear(Z);
 
   if (IsNegative) {
     mpfr_neg(Result, Result, MPFR_RNDN);
@@ -323,28 +383,20 @@ inline MpfrFloat mpfrExactDiv(const MpfrFloat &A, const MpfrFloat &B) {
 }
 
 // ===================================================================
-// Validation helper: round MPFR value to any IEEE 754-style format
+// mpfrRoundToFormat — Round MPFR value to any IEEE 754-style format
 // ===================================================================
 
-// Round an MpfrFloat to the target FloatType with ties-to-even and return
-// the bit pattern. Works for any sign-magnitude format with implicit bit
-// (float16, float32, bfloat16, fp8_e5m2, fp8_e4m3, etc.).
-//
-// Strategy: scale |val| to the integer-mantissa domain for the appropriate
-// exponent level, use mpfr_rint for correctly-rounded nearest-integer,
-// then pack the bit pattern. Handles normals, subnormals, overflow to Inf,
-// and underflow to zero, including all rounding boundary cases.
 template <typename FloatType>
-uint64_t mpfrRoundToFormat(const MpfrFloat &Val) {
+typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   using Fmt = typename FloatType::format;
   using Enc = typename FloatType::encoding;
+  using BitsType = typename FloatType::storage_type;
   constexpr int MantBits = Fmt::mant_bits;
   constexpr int ExpBits = Fmt::exp_bits;
   constexpr int Bias = FloatType::exponent_bias;
-  constexpr uint64_t ExpAllOnes = (uint64_t{1} << ExpBits) - 1;
-  constexpr uint64_t MantMask = (uint64_t{1} << MantBits) - 1;
+  constexpr BitsType ExpAllOnes = (BitsType{1} << ExpBits) - 1;
+  constexpr BitsType MantMask = (BitsType{1} << MantBits) - 1;
 
-  // Max biased exponent for finite values: reserved if NaN/Inf use it.
   constexpr int MaxBiasedExp = [] {
     if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent ||
                   Enc::inf_encoding == InfEncoding::ReservedExponent)
@@ -353,33 +405,51 @@ uint64_t mpfrRoundToFormat(const MpfrFloat &Val) {
       return (1 << ExpBits) - 1;
   }();
 
-  constexpr int EminIeee = 1 - Bias; // minimum normal IEEE exponent
+  // For explicit-bit formats, the effective mantissa precision for rounding
+  // is one less (the J-bit is explicit, not implicit).
+  constexpr int RoundingMantBits =
+      Enc::has_implicit_bit ? MantBits : (MantBits - 1);
+
+  constexpr int EminIeee = 1 - Bias;
 
   // --- Special values ---
 
   if (Val.isNan()) {
     if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-      return (ExpAllOnes << Fmt::exp_offset) |
-             (uint64_t{1} << (MantBits - 1));
+      if constexpr (Enc::has_implicit_bit) {
+        return (ExpAllOnes << Fmt::exp_offset) |
+               (BitsType{1} << (MantBits - 1));
+      } else {
+        // Explicit bit: J=1, quiet bit set
+        constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
+        constexpr BitsType QuietBit = BitsType{1} << (MantBits - 2);
+        return (ExpAllOnes << Fmt::exp_offset) | JBit | QuietBit;
+      }
     }
-    return 0;
+    return BitsType{0};
   }
 
   if (Val.isInf()) {
     if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-      uint64_t Bits = ExpAllOnes << Fmt::exp_offset;
+      BitsType InfBits;
+      if constexpr (Enc::has_implicit_bit) {
+        InfBits = ExpAllOnes << Fmt::exp_offset;
+      } else {
+        constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
+        InfBits = (ExpAllOnes << Fmt::exp_offset) | JBit;
+      }
       if (Val.isNegative())
-        Bits |= uint64_t{1} << Fmt::sign_offset;
-      return Bits;
+        InfBits |= BitsType{1} << Fmt::sign_offset;
+      return InfBits;
     }
-    return 0;
+    return BitsType{0};
   }
 
   if (Val.isZero()) {
-    uint64_t Bits = 0;
+    BitsType ZeroBits = 0;
     if (Val.isNegative() && Enc::negative_zero == NegativeZero::Exists)
-      Bits |= uint64_t{1} << Fmt::sign_offset;
-    return Bits;
+      ZeroBits |= BitsType{1} << Fmt::sign_offset;
+    return ZeroBits;
   }
 
   // --- Finite: round by scaling to integer mantissa + mpfr_rint ---
@@ -391,73 +461,101 @@ uint64_t mpfrRoundToFormat(const MpfrFloat &Val) {
   MpfrFloat Scaled;
   mpfr_abs(Scaled, Val, MPFR_RNDN);
 
-  uint64_t StoredExp;
-  uint64_t StoredMant;
+  BitsType StoredExp;
+  BitsType StoredMant;
 
   if (IeeeExp >= EminIeee) {
-    // Normal range (may overflow to Inf via rounding cascade).
-    //
-    // Scale |val| * 2^(MantBits - IeeeExp) maps the significand
-    // [1, 2) * 2^IeeeExp into the integer range [2^MantBits, 2^(MantBits+1)).
-    // mpfr_rint gives the correctly-rounded integer significand.
-    mpfr_mul_2si(Scaled, Scaled, MantBits - IeeeExp, MPFR_RNDN);
+    // Normal range
+    mpfr_mul_2si(Scaled, Scaled, RoundingMantBits - IeeeExp, MPFR_RNDN);
     mpfr_rint(Scaled, Scaled, MPFR_RNDN);
-    uintmax_t IntSig = mpfr_get_uj(Scaled, MPFR_RNDN);
 
-    // Rounding may carry into the next exponent (e.g., 1.111...1 → 10.0).
-    if (IntSig >= (uintmax_t{1} << (MantBits + 1))) {
+    mpz_t Z;
+    mpz_init(Z);
+    mpfr_get_z(Z, Scaled, MPFR_RNDN);
+    BitsType IntSig = detail::mpzToBits<BitsType>(Z);
+    mpz_clear(Z);
+
+    // Rounding may carry into the next exponent
+    if (IntSig >= (BitsType{1} << (RoundingMantBits + 1))) {
       IeeeExp++;
       IntSig >>= 1;
     }
 
     int BiasedExp = IeeeExp + Bias;
     if (BiasedExp > MaxBiasedExp) {
-      // Overflow to Inf.
+      // Overflow to Inf
       if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-        uint64_t Bits = ExpAllOnes << Fmt::exp_offset;
+        BitsType InfBits;
+        if constexpr (Enc::has_implicit_bit) {
+          InfBits = ExpAllOnes << Fmt::exp_offset;
+        } else {
+          constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
+          InfBits = (ExpAllOnes << Fmt::exp_offset) | JBit;
+        }
         if (Negative)
-          Bits |= uint64_t{1} << Fmt::sign_offset;
-        return Bits;
+          InfBits |= BitsType{1} << Fmt::sign_offset;
+        return InfBits;
       }
-      return 0;
+      return BitsType{0};
     }
 
-    StoredExp = static_cast<uint64_t>(BiasedExp);
-    StoredMant = IntSig & MantMask;
+    StoredExp = static_cast<BitsType>(BiasedExp);
+    if constexpr (Enc::has_implicit_bit) {
+      StoredMant = IntSig & MantMask;
+    } else {
+      // Explicit bit: store the full significand including J-bit
+      StoredMant = IntSig & MantMask;
+    }
 
   } else {
-    // Subnormal range (may round up to smallest normal or down to zero).
-    //
-    // Scale |val| * 2^(Bias - 1 + MantBits) maps the subnormal mantissa
-    // integers [1, 2^MantBits - 1] to themselves as reals.
-    // mpfr_rint gives the correctly-rounded mantissa integer.
-    mpfr_mul_2si(Scaled, Scaled, Bias - 1 + MantBits, MPFR_RNDN);
+    // Subnormal range
+    mpfr_mul_2si(Scaled, Scaled, Bias - 1 + RoundingMantBits, MPFR_RNDN);
     mpfr_rint(Scaled, Scaled, MPFR_RNDN);
-    uintmax_t Mant = mpfr_get_uj(Scaled, MPFR_RNDN);
 
-    if (Mant >= (uintmax_t{1} << MantBits)) {
-      // Rounded up to smallest normal.
-      StoredExp = 1;
-      StoredMant = 0;
-    } else if (Mant == 0) {
-      // Underflow to zero.
-      uint64_t Bits = 0;
-      if (Negative && Enc::negative_zero == NegativeZero::Exists)
-        Bits |= uint64_t{1} << Fmt::sign_offset;
-      return Bits;
+    mpz_t Z;
+    mpz_init(Z);
+    mpfr_get_z(Z, Scaled, MPFR_RNDN);
+    BitsType Mant = detail::mpzToBits<BitsType>(Z);
+    mpz_clear(Z);
+
+    if constexpr (Enc::has_implicit_bit) {
+      if (Mant >= (BitsType{1} << MantBits)) {
+        StoredExp = 1;
+        StoredMant = 0;
+      } else if (Mant == 0) {
+        BitsType ZeroBits = 0;
+        if (Negative && Enc::negative_zero == NegativeZero::Exists)
+          ZeroBits |= BitsType{1} << Fmt::sign_offset;
+        return ZeroBits;
+      } else {
+        StoredExp = 0;
+        StoredMant = Mant;
+      }
     } else {
-      StoredExp = 0;
-      StoredMant = Mant;
+      // Explicit bit: subnormals have J=0
+      if (Mant >= (BitsType{1} << (MantBits - 1))) {
+        // Rounded up to smallest normal (J=1)
+        StoredExp = 1;
+        StoredMant = BitsType{1} << (MantBits - 1); // J=1, frac=0
+      } else if (Mant == 0) {
+        BitsType ZeroBits = 0;
+        if (Negative && Enc::negative_zero == NegativeZero::Exists)
+          ZeroBits |= BitsType{1} << Fmt::sign_offset;
+        return ZeroBits;
+      } else {
+        StoredExp = 0;
+        StoredMant = Mant; // J=0 for subnormals
+      }
     }
   }
 
-  uint64_t Bits = 0;
+  BitsType Result = 0;
   if (Negative)
-    Bits |= uint64_t{1} << Fmt::sign_offset;
-  Bits |= StoredExp << Fmt::exp_offset;
-  Bits |= StoredMant << Fmt::mant_offset;
+    Result |= BitsType{1} << Fmt::sign_offset;
+  Result |= StoredExp << Fmt::exp_offset;
+  Result |= StoredMant << Fmt::mant_offset;
 
-  return Bits;
+  return Result;
 }
 
 } // namespace opine::oracle

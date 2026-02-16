@@ -101,6 +101,16 @@ struct Relaxed {
   static constexpr auto denormal_mode = DenormalMode::FlushBoth;
 };
 
+struct IEEE754ExplicitBit {
+  static constexpr auto sign_encoding = SignEncoding::SignMagnitude;
+  static constexpr bool has_implicit_bit = false;
+  static constexpr int exponent_bias = AutoBias; // 2^(E-1) - 1
+  static constexpr auto negative_zero = NegativeZero::Exists;
+  static constexpr auto nan_encoding = NanEncoding::ReservedExponent;
+  static constexpr auto inf_encoding = InfEncoding::ReservedExponent;
+  static constexpr auto denormal_mode = DenormalMode::Full;
+};
+
 struct GPUStyle {
   static constexpr auto sign_encoding = SignEncoding::SignMagnitude;
   static constexpr bool has_implicit_bit = true;
@@ -118,6 +128,7 @@ static_assert(ValidEncoding<PDP10>);
 static_assert(ValidEncoding<CDC6600>);
 static_assert(ValidEncoding<E4M3FNUZ>);
 static_assert(ValidEncoding<Relaxed>);
+static_assert(ValidEncoding<IEEE754ExplicitBit>);
 static_assert(ValidEncoding<GPUStyle>);
 
 } // namespace encodings

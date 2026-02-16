@@ -23,7 +23,8 @@ using namespace opine::testing;
 
 template <typename FloatType>
 auto makeOracleOp(Op Operation) {
-  return [Operation](uint64_t A, uint64_t B) -> TestOutput {
+  using BitsType = typename FloatType::storage_type;
+  return [Operation](BitsType A, BitsType B) -> TestOutput<BitsType> {
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Mb = decodeToMpfr<FloatType>(B);
     MpfrFloat Exact = mpfrExactOp(Operation, Ma, Mb);
@@ -39,6 +40,7 @@ template <typename FloatType>
 int runFormatTests() {
   using Sf = SoftFloatOps<FloatType>;
   using SfType = typename Sf::SfType;
+  using BitsType = typename FloatType::storage_type;
   using SfBinOp = SfType (*)(SfType, SfType);
   constexpr int TotalBits = FloatType::format::total_bits;
   constexpr int HexWidth = (TotalBits + 3) / 4;
@@ -46,9 +48,9 @@ int runFormatTests() {
   // Iteration: targeted edge cases + 10,000 random pairs
   constexpr auto Interesting = interestingValues<FloatType>();
   auto Iter =
-      combined(TargetedPairs{Interesting.data(),
+      combined(TargetedPairs<BitsType>{Interesting.data(),
                              static_cast<int>(Interesting.size())},
-               RandomPairs<TotalBits>{42, 10000});
+               RandomPairs<BitsType, TotalBits>{42, 10000});
 
   NanAwareBitExact<FloatType> Cmp;
 
@@ -70,7 +72,7 @@ int runFormatTests() {
   for (auto &T : Tests) {
     auto Oracle = makeOracleOp<FloatType>(T.OracleOp);
     auto SfImpl = makeSoftFloatOp<FloatType>(T.SfFn);
-    auto R = testAgainst(T.Name, HexWidth, Iter, Oracle, SfImpl, Cmp);
+    auto R = testAgainst<BitsType>(T.Name, HexWidth, Iter, Oracle, SfImpl, Cmp);
     TotalFailures += R.Failed;
   }
 
@@ -95,6 +97,12 @@ int main() {
 
   std::printf("\n=== float64 (IEEE 754 binary64) ===\n");
   Failures += runFormatTests<float64>();
+
+  std::printf("\n=== extFloat80 (x87 80-bit extended) ===\n");
+  Failures += runFormatTests<extFloat80>();
+
+  std::printf("\n=== float128 (IEEE 754 binary128) ===\n");
+  Failures += runFormatTests<float128>();
 
   if (Failures > 0) {
     std::fprintf(stderr, "\nFAILED: %d total failures\n", Failures);

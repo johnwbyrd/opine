@@ -136,9 +136,9 @@ set_target_properties(softfloat PROPERTIES LINKER_LANGUAGE C)
 
 target_include_directories(softfloat
     PRIVATE
-        "${SF_PLATFORM_DIR}"
         "${SF_SOURCE_DIR}/${SOFTFLOAT_SPECIALIZE}"
     PUBLIC
+        "${SF_PLATFORM_DIR}"
         "${SF_SOURCE_DIR}/include"
 )
 
@@ -150,8 +150,13 @@ target_compile_definitions(softfloat PRIVATE
 )
 
 if(SOFTFLOAT_FAST_INT64)
-    target_compile_definitions(softfloat PRIVATE SOFTFLOAT_FAST_INT64)
+    target_compile_definitions(softfloat PUBLIC SOFTFLOAT_FAST_INT64)
 endif()
+
+# Endianness must be PUBLIC so that consumers see the correct struct layout
+# in softfloat_types.h (which uses #ifdef LITTLEENDIAN / BIGENDIAN to order
+# fields of extFloat80_t and float128_t).
+target_compile_definitions(softfloat PUBLIC ${SF_ENDIAN_DEF})
 
 # Match upstream: -O2 is required so that INLINE functions from opts-GCC.h
 # are actually inlined (C inline semantics need optimization enabled).

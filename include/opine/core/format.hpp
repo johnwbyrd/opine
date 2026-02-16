@@ -62,6 +62,8 @@ using fp16_layout = IEEE_Layout<5, 10>;
 using bfloat16_layout = IEEE_Layout<8, 7>;
 using fp32_layout = IEEE_Layout<8, 23>;
 using fp64_layout = IEEE_Layout<11, 52>;
+using fp80_layout = IEEE_Layout<15, 64>;
+using fp128_layout = IEEE_Layout<15, 112>;
 
 } // namespace opine
 

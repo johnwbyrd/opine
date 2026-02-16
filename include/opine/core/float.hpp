@@ -1,6 +1,7 @@
 #ifndef OPINE_CORE_FLOAT_HPP
 #define OPINE_CORE_FLOAT_HPP
 
+#include "opine/core/bits.hpp"
 #include "opine/core/compute_format.hpp"
 #include "opine/core/encoding.hpp"
 #include "opine/core/exceptions.hpp"
@@ -21,6 +22,8 @@ struct Float {
   using rounding = Rnd;
   using exceptions = Exc;
   using platform = Plat;
+
+  using storage_type = bits_t<Fmt::total_bits>;
 
   using compute_format = DefaultComputeFormat<Fmt, Enc, Rnd>;
 
@@ -50,6 +53,11 @@ using IEEE754Float =
 using float16 = IEEE754Float<5, 10>;
 using float32 = IEEE754Float<8, 23>;
 using float64 = IEEE754Float<11, 52>;
+using float128 = IEEE754Float<15, 112>;
+
+// x87 80-bit extended: explicit integer bit (no implicit bit)
+using extFloat80 =
+    Float<IEEE_Layout<15, 64>, encodings::IEEE754ExplicitBit>;
 
 // ML formats
 using bfloat16 = Float<IEEE_Layout<8, 7>, encodings::IEEE754>;
