@@ -6,3 +6,13 @@ endfunction()
 
 # Compile-time verification of the type system
 add_opine_test(test_types unit/test_types.cpp)
+
+# SoftFloat smoke test (always built)
+add_executable(test_softfloat_smoke softfloat/test_softfloat_smoke.cpp)
+target_link_libraries(test_softfloat_smoke PRIVATE softfloat)
+add_test(NAME test_softfloat_smoke COMMAND test_softfloat_smoke)
+
+# Oracle tests (only if MPFR available)
+if(OPINE_HAS_ORACLE)
+    # Placeholder: oracle tests will be added in TDD steps 1-3
+endif()
