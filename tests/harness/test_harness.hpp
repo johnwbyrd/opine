@@ -254,17 +254,21 @@ constexpr auto interestingValues() {
     }};
   } else {
     // Explicit integer bit (e.g. extFloat80): J-bit is bit M-1 of mantissa.
-    // Normal numbers must have J=1. Subnormals have J=0.
+    // Normal numbers have J=1. Subnormals have J=0. But the format allows
+    // all combinations: unnormals (J=0 with exp>0), pseudo-denormals
+    // (J=1 with exp=0), pseudo-infinities and pseudo-NaNs (J=0 with
+    // exp=max). All are valid encodings with defined values.
     constexpr BitsType JBit = BitsType{1} << (M - 1);
     constexpr BitsType MantMaskNoJ = MantMask & ~JBit;
-    return std::array<BitsType, 24>{{
+    return std::array<BitsType, 38>{{
+        // === Canonical encodings ===
         0,                                                              // +0
         SignBit,                                                        // -0
         (ExpMax << Fmt::exp_offset) | JBit,                             // +Inf (J=1, frac=0)
         SignBit | (ExpMax << Fmt::exp_offset) | JBit,                   // -Inf
         (ExpMax << Fmt::exp_offset) | JBit | (BitsType{1} << (M - 2)), // QNaN
         (ExpMax << Fmt::exp_offset) | JBit | 1,                        // SNaN min
-        (ExpMax << Fmt::exp_offset) | MantMask,                        // SNaN max (all frac bits)
+        (ExpMax << Fmt::exp_offset) | MantMask,                        // SNaN max (all bits)
         SignBit | (ExpMax << Fmt::exp_offset) | JBit | (BitsType{1} << (M - 2)), // -QNaN
         BitsType{1},                                                    // min +subnormal (J=0)
         SignBit | BitsType{1},                                          // min -subnormal
@@ -278,10 +282,28 @@ constexpr auto interestingValues() {
         (BitsType(Bias - 1) << Fmt::exp_offset) | JBit,               // 0.5
         (BitsType{1} << Fmt::exp_offset) | JBit | 1,                   // min normal + 1 ULP
         (BitsType(Bias) << Fmt::exp_offset) | JBit | 1,               // 1.0 + 1 ULP
-        (BitsType(Bias) << Fmt::exp_offset) | JBit - 1,               // 1.0 - 1 ULP (J=0, frac=all 1s => subnormal of exp=Bias)
-        BitsType(Bias - (M - 1)) << Fmt::exp_offset | JBit,           // machine epsilon
-        (BitsType{1} << Fmt::exp_offset) | (JBit - 1),                // unnormal: exp=1 but J=0 (pseudo-denormal)
-        (BitsType(Bias) << Fmt::exp_offset),                           // unnormal: exp=Bias but J=0
+        (BitsType(Bias) << Fmt::exp_offset) | (JBit - 1),             // unnormal: exp=Bias, J=0, frac=all 1s
+        (BitsType(Bias - (M - 1)) << Fmt::exp_offset) | JBit,         // machine epsilon
+        // === Unnormals: non-zero exponent, J=0 ===
+        (BitsType{1} << Fmt::exp_offset),                              // unnormal-zero: exp=1, sig=0
+        (BitsType(Bias) << Fmt::exp_offset),                           // unnormal-zero: exp=Bias, sig=0
+        SignBit | (BitsType(Bias) << Fmt::exp_offset),                 // negative unnormal-zero
+        (BitsType{1} << Fmt::exp_offset) | MantMaskNoJ,               // unnormal: exp=1, J=0, frac=all 1s
+        (BitsType(Bias) << Fmt::exp_offset) | (JBit >> 1),            // unnormal 0.5: exp=Bias, sig=0x4000...
+        (BitsType{2} << Fmt::exp_offset) | MantMaskNoJ,               // unnormal: exp=2, J=0, frac=all 1s
+        ((ExpMax - 1) << Fmt::exp_offset) | MantMaskNoJ,              // unnormal near max: exp=max-1, J=0, frac=all 1s
+        // === Pseudo-denormals: exp=0, J=1 ===
+        JBit,                                                           // pseudo-denormal: exp=0, J=1, frac=0
+        SignBit | JBit,                                                 // negative pseudo-denormal
+        JBit | 1,                                                       // pseudo-denormal: exp=0, J=1, frac=1
+        JBit | MantMaskNoJ,                                             // pseudo-denormal: exp=0, J=1, frac=all 1s
+        // === Pseudo-infinities: exp=max, J=0, frac=0 ===
+        (ExpMax << Fmt::exp_offset),                                    // pseudo-infinity
+        SignBit | (ExpMax << Fmt::exp_offset),                          // negative pseudo-infinity
+        // === Pseudo-NaNs: exp=max, J=0, frac!=0 ===
+        (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 2)),       // pseudo-QNaN
+        (ExpMax << Fmt::exp_offset) | 1,                               // pseudo-SNaN min
+        (ExpMax << Fmt::exp_offset) | MantMaskNoJ,                    // pseudo-SNaN max
     }};
   }
 }

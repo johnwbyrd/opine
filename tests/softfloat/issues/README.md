@@ -637,3 +637,10 @@ configurations.  The fix does not affect them.
 Note: the MPFR oracle test focuses on finite arithmetic and does not test
 mul with infinity operands, so the mul bug (3.5) is not caught by this test.
 It is caught by the patched TestFloat (6.2).
+
+### Authorship
+
+This patch was developed with the assistance of AI.  The development
+process involved AI-generated drafts that were directed, reviewed, edited,
+and tested by the author, John Byrd. The author takes responsibility for
+the final submitted code.

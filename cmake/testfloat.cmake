@@ -9,8 +9,8 @@ include(FetchContent)
 
 FetchContent_Declare(
     testfloat
-    GIT_REPOSITORY https://github.com/ucb-bar/berkeley-testfloat-3.git
-    GIT_TAG        a9c849f1b0eb0264b626d9686ffae167d996e3be
+    GIT_REPOSITORY https://github.com/johnwbyrd/berkeley-testfloat-3.git
+    GIT_TAG        c9309bbf950e9349f848b503779f4425428fd869
 )
 
 FetchContent_GetProperties(testfloat)

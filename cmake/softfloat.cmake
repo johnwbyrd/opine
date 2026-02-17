@@ -9,8 +9,8 @@ include(FetchContent)
 
 FetchContent_Declare(
     softfloat
-    GIT_REPOSITORY https://github.com/ucb-bar/berkeley-softfloat-3.git
-    GIT_TAG        a0c6494cdc11865811dec815d5c0049fba9d82a8
+    GIT_REPOSITORY https://github.com/johnwbyrd/berkeley-softfloat-3.git
+    GIT_TAG        2491ca84984fc2ce0296152e45e61a85623c0317
 )
 
 FetchContent_GetProperties(softfloat)

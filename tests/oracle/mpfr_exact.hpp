@@ -252,10 +252,12 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
         return Result;
       }
     } else {
+      // Explicit-bit: infinity = max exponent with no fraction bits,
+      // regardless of J-bit.  Covers both canonical infinity (J=1, frac=0)
+      // and pseudo-infinity (J=0, frac=0).
       constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
       constexpr BitsType FracMask = JBit - 1;
-      if (MagExp == ExpMax && (MagMant & JBit) != 0 &&
-          (MagMant & FracMask) == 0) {
+      if (MagExp == ExpMax && (MagMant & FracMask) == 0) {
         mpfr_set_inf(Result, IsNegative ? -1 : +1);
         return Result;
       }
@@ -269,15 +271,12 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
         return Result;
       }
     } else {
-      // Explicit-bit: NaN = max exp with J=1 and frac!=0, or J=0 (pseudo-NaN)
-      if (MagExp == ExpMax) {
-        constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
-        constexpr BitsType FracMask = JBit - 1;
-        bool IsInf = (MagMant & JBit) != 0 && (MagMant & FracMask) == 0;
-        if (!IsInf && MagMant != 0) {
-          mpfr_set_nan(Result);
-          return Result;
-        }
+      // Explicit-bit: infinity already caught above, so any remaining
+      // max-exponent encoding with non-zero mantissa is NaN (canonical
+      // or pseudo-NaN).
+      if (MagExp == ExpMax && MagMant != 0) {
+        mpfr_set_nan(Result);
+        return Result;
       }
     }
   }
