@@ -1,12 +1,11 @@
-// Oracle Part 1 validation: verify that decodeToMpfr + exact MPFR
-// arithmetic, when rounded to the target format, matches Berkeley
-// SoftFloat for 10,000+ random input pairs per operation.
+// Oracle validation: verify that MPFR and SoftFloat agree by testing
+// in both directions — MPFR vs SoftFloat, then SoftFloat vs MPFR.
 //
-// This is an instance of the "this against that" harness (tdd.md):
-//   ImplA = MPFR oracle (decode -> exact op -> round to format)
-//   ImplB = SoftFloat
-//   Both are opaque callables; the harness doesn't know what backs them.
+// This is an instance of the "this against that" harness (tdd.md).
+// Both implementations are opaque callables with the same signature;
+// the harness doesn't know what backs them, so the order is arbitrary.
 
+#include "harness/native_ops.hpp"
 #include "harness/softfloat_ops.hpp"
 #include "harness/test_harness.hpp"
 #include "oracle/mpfr_exact.hpp"
@@ -50,7 +49,7 @@ int runFormatTests() {
   auto Iter =
       combined(TargetedPairs<BitsType>{Interesting.data(),
                              static_cast<int>(Interesting.size())},
-               RandomPairs<BitsType, TotalBits>{42, 10000});
+               RandomPairs<BitsType, TotalBits>{42, 1000000});
 
   NanAwareBitExact<FloatType> Cmp;
 
@@ -69,10 +68,86 @@ int runFormatTests() {
 
   int TotalFailures = 0;
 
+  std::printf("  MPFR vs SoftFloat:\n");
   for (auto &T : Tests) {
+    char Label[64];
+    std::snprintf(Label, sizeof(Label), "    %s", T.Name);
     auto Oracle = makeOracleOp<FloatType>(T.OracleOp);
     auto SfImpl = makeSoftFloatOp<FloatType>(T.SfFn);
-    auto R = testAgainst<BitsType>(T.Name, HexWidth, Iter, Oracle, SfImpl, Cmp);
+    auto R = testAgainst<BitsType>(Label, HexWidth, Iter, Oracle, SfImpl, Cmp);
+    TotalFailures += R.Failed;
+  }
+
+  std::printf("  SoftFloat vs MPFR:\n");
+  for (auto &T : Tests) {
+    char Label[64];
+    std::snprintf(Label, sizeof(Label), "    %s", T.Name);
+    auto Oracle = makeOracleOp<FloatType>(T.OracleOp);
+    auto SfImpl = makeSoftFloatOp<FloatType>(T.SfFn);
+    auto R = testAgainst<BitsType>(Label, HexWidth, Iter, SfImpl, Oracle, Cmp);
+    TotalFailures += R.Failed;
+  }
+
+  return TotalFailures;
+}
+
+// ===================================================================
+// Three-way test: native hardware vs MPFR and SoftFloat
+// ===================================================================
+// Only for formats with native CPU operations (float32, float64).
+// This validates the oracle's decode/encode logic against a third
+// independent implementation — the hardware FPU.
+
+template <typename FloatType>
+int runNativeTests() {
+  using Nat = NativeOps<FloatType>;
+  using Sf = SoftFloatOps<FloatType>;
+  using SfType = typename Sf::SfType;
+  using BitsType = typename FloatType::storage_type;
+  using SfBinOp = SfType (*)(SfType, SfType);
+  using NatBinOp = TestOutput<BitsType> (*)(BitsType, BitsType);
+  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int HexWidth = (TotalBits + 3) / 4;
+
+  constexpr auto Interesting = interestingValues<FloatType>();
+  auto Iter =
+      combined(TargetedPairs<BitsType>{Interesting.data(),
+                             static_cast<int>(Interesting.size())},
+               RandomPairs<BitsType, TotalBits>{42, 1000000});
+
+  NanAwareBitExact<FloatType> Cmp;
+
+  struct OpDesc {
+    const char *Name;
+    Op OracleOp;
+    SfBinOp SfFn;
+    NatBinOp NatFn;
+  };
+
+  OpDesc Tests[] = {
+      {"add", Op::Add, &Sf::add, &Nat::add},
+      {"sub", Op::Sub, &Sf::sub, &Nat::sub},
+      {"mul", Op::Mul, &Sf::mul, &Nat::mul},
+      {"div", Op::Div, &Sf::div, &Nat::div},
+  };
+
+  int TotalFailures = 0;
+
+  std::printf("  Native vs MPFR:\n");
+  for (auto &T : Tests) {
+    char Label[64];
+    std::snprintf(Label, sizeof(Label), "    %s", T.Name);
+    auto Oracle = makeOracleOp<FloatType>(T.OracleOp);
+    auto R = testAgainst<BitsType>(Label, HexWidth, Iter, T.NatFn, Oracle, Cmp);
+    TotalFailures += R.Failed;
+  }
+
+  std::printf("  Native vs SoftFloat:\n");
+  for (auto &T : Tests) {
+    char Label[64];
+    std::snprintf(Label, sizeof(Label), "    %s", T.Name);
+    auto SfImpl = makeSoftFloatOp<FloatType>(T.SfFn);
+    auto R = testAgainst<BitsType>(Label, HexWidth, Iter, T.NatFn, SfImpl, Cmp);
     TotalFailures += R.Failed;
   }
 
@@ -94,9 +169,11 @@ int main() {
 
   std::printf("\n=== float32 (IEEE 754 binary32) ===\n");
   Failures += runFormatTests<float32>();
+  Failures += runNativeTests<float32>();
 
   std::printf("\n=== float64 (IEEE 754 binary64) ===\n");
   Failures += runFormatTests<float64>();
+  Failures += runNativeTests<float64>();
 
   std::printf("\n=== extFloat80 (x87 80-bit extended) ===\n");
   Failures += runFormatTests<extFloat80>();
@@ -109,6 +186,6 @@ int main() {
     return 1;
   }
 
-  std::printf("\nPASS: All oracle results match SoftFloat\n");
+  std::printf("\nPASS: all implementations agree\n");
   return 0;
 }
