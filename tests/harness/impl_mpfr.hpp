@@ -539,6 +539,15 @@ template <typename FloatType> struct MpfrAdapter {
   }
 
   TestOutput<BitsType> dispatchUnary(Op O, BitsType A) const {
+    using Fmt = typename FloatType::format;
+    // Neg and Abs are non-computational sign-bit operations per IEEE 754.
+    // They must not decode/reencode (which would normalize unnormals).
+    constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
+    switch (O) {
+    case Op::Neg: return {BitsType(A ^ SignBit), 0};
+    case Op::Abs: return {BitsType(A & ~SignBit), 0};
+    default: break;
+    }
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Exact = mpfrExactUnaryOp(O, Ma);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
