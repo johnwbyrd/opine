@@ -3,32 +3,42 @@
 
 // Generic "this against that" test harness (from tdd.md).
 //
-// testAgainst(Name, HexWidth, Iter, ImplA, ImplB, Cmp)
+// test_against(Name, HexWidth, Iter, ImplA, ImplB, Cmp)
 //   runs ImplA and ImplB on every input pair yielded by Iter,
 //   compares outputs using Cmp, and prints results.
 //
 // Both ImplA and ImplB are opaque callables:
 //   (BitsType, BitsType) -> TestOutput<BitsType>
 // The harness knows nothing about what library backs them.
+//
+// This header includes only ops.hpp. It has no knowledge of MPFR,
+// SoftFloat, native FPU, or any other implementation.
 
 #include <array>
-#include <cstdint>
 #include <cstdio>
 #include <random>
 #include <tuple>
 
+#include "harness/ops.hpp"
 #include "opine/opine.hpp"
 
 namespace opine::testing {
 
 // ===================================================================
-// Core types
+// Hex printing for arbitrary-width bit types
 // ===================================================================
 
-template <typename BitsType> struct TestOutput {
-  BitsType Bits;
-  uint8_t Flags; // 0 if implementation doesn't report flags
-};
+template <typename BitsType>
+void printHex(FILE *Out, BitsType Val, int Width) {
+  for (int I = Width - 1; I >= 0; --I) {
+    int Nibble = static_cast<int>((Val >> (I * 4)) & BitsType{0xF});
+    std::fputc("0123456789ABCDEF"[Nibble], Out);
+  }
+}
+
+// ===================================================================
+// Failure record
+// ===================================================================
 
 template <typename BitsType> struct Failure {
   BitsType InputA;
@@ -44,19 +54,7 @@ struct TestResult {
 };
 
 // ===================================================================
-// Hex printing for arbitrary-width bit types
-// ===================================================================
-
-template <typename BitsType>
-void printHex(FILE *Out, BitsType Val, int Width) {
-  for (int I = Width - 1; I >= 0; --I) {
-    int Nibble = static_cast<int>((Val >> (I * 4)) & BitsType{0xF});
-    std::fputc("0123456789ABCDEF"[Nibble], Out);
-  }
-}
-
-// ===================================================================
-// testAgainst — the harness
+// test_against — the harness
 // ===================================================================
 
 static constexpr int MaxReportedFailures = 10;
@@ -215,8 +213,7 @@ template <typename FloatType> struct NanAwareBitExact {
 
 // Generates edge-case bit patterns from format/encoding parameters.
 // Works for any IEEE 754-style format.
-template <typename FloatType>
-constexpr auto interestingValues() {
+template <typename FloatType> constexpr auto interestingValues() {
   using Fmt = typename FloatType::format;
   using Enc = typename FloatType::encoding;
   using BitsType = typename FloatType::storage_type;
@@ -229,81 +226,85 @@ constexpr auto interestingValues() {
 
   if constexpr (Enc::has_implicit_bit) {
     return std::array<BitsType, 22>{{
-        0,                                                              // +0
-        SignBit,                                                        // -0
-        ExpMax << Fmt::exp_offset,                                      // +Inf
-        SignBit | (ExpMax << Fmt::exp_offset),                          // -Inf
-        (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 1)),        // QNaN
-        (ExpMax << Fmt::exp_offset) | 1,                                // SNaN min
-        (ExpMax << Fmt::exp_offset) | ((BitsType{1} << (M - 1)) - 1),  // SNaN max
-        SignBit | (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 1)), // -QNaN
-        BitsType{1},                                                    // min +subnormal
-        SignBit | BitsType{1},                                          // min -subnormal
-        MantMask,                                                       // max subnormal
-        BitsType{1} << M,                                               // min +normal
-        ((ExpMax - 1) << Fmt::exp_offset) | MantMask,                   // max +finite
-        SignBit | ((ExpMax - 1) << Fmt::exp_offset) | MantMask,         // max -finite
-        BitsType(Bias) << Fmt::exp_offset,                              // 1.0
-        SignBit | (BitsType(Bias) << Fmt::exp_offset),                  // -1.0
-        BitsType(Bias + 1) << Fmt::exp_offset,                         // 2.0
-        BitsType(Bias - 1) << Fmt::exp_offset,                         // 0.5
-        (BitsType{1} << M) + 1,                                        // min normal + 1 ULP
-        (BitsType(Bias) << Fmt::exp_offset) + 1,                       // 1.0 + 1 ULP
-        (BitsType(Bias) << Fmt::exp_offset) - 1,                       // 1.0 - 1 ULP
-        BitsType(Bias - M) << Fmt::exp_offset,                         // machine epsilon
+        0,                                                         // +0
+        SignBit,                                                   // -0
+        ExpMax << Fmt::exp_offset,                                 // +Inf
+        SignBit | (ExpMax << Fmt::exp_offset),                     // -Inf
+        (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 1)),   // QNaN
+        (ExpMax << Fmt::exp_offset) | 1,                           // SNaN min
+        (ExpMax << Fmt::exp_offset) | ((BitsType{1} << (M - 1)) - 1), // SNaN max
+        SignBit | (ExpMax << Fmt::exp_offset) |
+            (BitsType{1} << (M - 1)),                              // -QNaN
+        BitsType{1},                                               // min +subnormal
+        SignBit | BitsType{1},                                     // min -subnormal
+        MantMask,                                                  // max subnormal
+        BitsType{1} << M,                                          // min +normal
+        ((ExpMax - 1) << Fmt::exp_offset) | MantMask,              // max +finite
+        SignBit | ((ExpMax - 1) << Fmt::exp_offset) | MantMask,    // max -finite
+        BitsType(Bias) << Fmt::exp_offset,                         // 1.0
+        SignBit | (BitsType(Bias) << Fmt::exp_offset),             // -1.0
+        BitsType(Bias + 1) << Fmt::exp_offset,                    // 2.0
+        BitsType(Bias - 1) << Fmt::exp_offset,                    // 0.5
+        (BitsType{1} << M) + 1,                  // min normal + 1 ULP
+        (BitsType(Bias) << Fmt::exp_offset) + 1, // 1.0 + 1 ULP
+        (BitsType(Bias) << Fmt::exp_offset) - 1, // 1.0 - 1 ULP
+        BitsType(Bias - M) << Fmt::exp_offset,   // machine epsilon
     }};
   } else {
     // Explicit integer bit (e.g. extFloat80): J-bit is bit M-1 of mantissa.
-    // Normal numbers have J=1. Subnormals have J=0. But the format allows
-    // all combinations: unnormals (J=0 with exp>0), pseudo-denormals
-    // (J=1 with exp=0), pseudo-infinities and pseudo-NaNs (J=0 with
-    // exp=max). All are valid encodings with defined values.
     constexpr BitsType JBit = BitsType{1} << (M - 1);
     constexpr BitsType MantMaskNoJ = MantMask & ~JBit;
     return std::array<BitsType, 38>{{
         // === Canonical encodings ===
-        0,                                                              // +0
-        SignBit,                                                        // -0
-        (ExpMax << Fmt::exp_offset) | JBit,                             // +Inf (J=1, frac=0)
-        SignBit | (ExpMax << Fmt::exp_offset) | JBit,                   // -Inf
-        (ExpMax << Fmt::exp_offset) | JBit | (BitsType{1} << (M - 2)), // QNaN
-        (ExpMax << Fmt::exp_offset) | JBit | 1,                        // SNaN min
-        (ExpMax << Fmt::exp_offset) | MantMask,                        // SNaN max (all bits)
-        SignBit | (ExpMax << Fmt::exp_offset) | JBit | (BitsType{1} << (M - 2)), // -QNaN
-        BitsType{1},                                                    // min +subnormal (J=0)
-        SignBit | BitsType{1},                                          // min -subnormal
-        MantMaskNoJ,                                                    // max subnormal (J=0, frac=all 1s)
-        (BitsType{1} << Fmt::exp_offset) | JBit,                       // min +normal (exp=1, J=1)
-        ((ExpMax - 1) << Fmt::exp_offset) | MantMask,                  // max +finite
-        SignBit | ((ExpMax - 1) << Fmt::exp_offset) | MantMask,        // max -finite
-        (BitsType(Bias) << Fmt::exp_offset) | JBit,                    // 1.0
-        SignBit | (BitsType(Bias) << Fmt::exp_offset) | JBit,          // -1.0
-        (BitsType(Bias + 1) << Fmt::exp_offset) | JBit,               // 2.0
-        (BitsType(Bias - 1) << Fmt::exp_offset) | JBit,               // 0.5
-        (BitsType{1} << Fmt::exp_offset) | JBit | 1,                   // min normal + 1 ULP
-        (BitsType(Bias) << Fmt::exp_offset) | JBit | 1,               // 1.0 + 1 ULP
-        (BitsType(Bias) << Fmt::exp_offset) | (JBit - 1),             // unnormal: exp=Bias, J=0, frac=all 1s
-        (BitsType(Bias - (M - 1)) << Fmt::exp_offset) | JBit,         // machine epsilon
+        0,                                                   // +0
+        SignBit,                                             // -0
+        (ExpMax << Fmt::exp_offset) | JBit,                  // +Inf (J=1, frac=0)
+        SignBit | (ExpMax << Fmt::exp_offset) | JBit,        // -Inf
+        (ExpMax << Fmt::exp_offset) | JBit |
+            (BitsType{1} << (M - 2)),                        // QNaN
+        (ExpMax << Fmt::exp_offset) | JBit | 1,             // SNaN min
+        (ExpMax << Fmt::exp_offset) | MantMask,              // SNaN max (all bits)
+        SignBit | (ExpMax << Fmt::exp_offset) | JBit |
+            (BitsType{1} << (M - 2)),                        // -QNaN
+        BitsType{1},                                         // min +subnormal (J=0)
+        SignBit | BitsType{1},                               // min -subnormal
+        MantMaskNoJ,                             // max subnormal (J=0, frac=all 1s)
+        (BitsType{1} << Fmt::exp_offset) | JBit, // min +normal (exp=1, J=1)
+        ((ExpMax - 1) << Fmt::exp_offset) | MantMask,       // max +finite
+        SignBit | ((ExpMax - 1) << Fmt::exp_offset) | MantMask, // max -finite
+        (BitsType(Bias) << Fmt::exp_offset) | JBit,         // 1.0
+        SignBit | (BitsType(Bias) << Fmt::exp_offset) | JBit, // -1.0
+        (BitsType(Bias + 1) << Fmt::exp_offset) | JBit,     // 2.0
+        (BitsType(Bias - 1) << Fmt::exp_offset) | JBit,     // 0.5
+        (BitsType{1} << Fmt::exp_offset) | JBit | 1,        // min normal + 1 ULP
+        (BitsType(Bias) << Fmt::exp_offset) | JBit | 1,     // 1.0 + 1 ULP
+        (BitsType(Bias) << Fmt::exp_offset) |
+            (JBit - 1), // unnormal: exp=Bias, J=0, frac=all 1s
+        (BitsType(Bias - (M - 1)) << Fmt::exp_offset) | JBit, // machine epsilon
         // === Unnormals: non-zero exponent, J=0 ===
-        (BitsType{1} << Fmt::exp_offset),                              // unnormal-zero: exp=1, sig=0
-        (BitsType(Bias) << Fmt::exp_offset),                           // unnormal-zero: exp=Bias, sig=0
-        SignBit | (BitsType(Bias) << Fmt::exp_offset),                 // negative unnormal-zero
-        (BitsType{1} << Fmt::exp_offset) | MantMaskNoJ,               // unnormal: exp=1, J=0, frac=all 1s
-        (BitsType(Bias) << Fmt::exp_offset) | (JBit >> 1),            // unnormal 0.5: exp=Bias, sig=0x4000...
-        (BitsType{2} << Fmt::exp_offset) | MantMaskNoJ,               // unnormal: exp=2, J=0, frac=all 1s
-        ((ExpMax - 1) << Fmt::exp_offset) | MantMaskNoJ,              // unnormal near max: exp=max-1, J=0, frac=all 1s
+        (BitsType{1} << Fmt::exp_offset),   // unnormal-zero: exp=1, sig=0
+        (BitsType(Bias) << Fmt::exp_offset), // unnormal-zero: exp=Bias, sig=0
+        SignBit | (BitsType(Bias) << Fmt::exp_offset), // negative unnormal-zero
+        (BitsType{1} << Fmt::exp_offset) |
+            MantMaskNoJ, // unnormal: exp=1, J=0, frac=all 1s
+        (BitsType(Bias) << Fmt::exp_offset) |
+            (JBit >> 1), // unnormal 0.5: exp=Bias, sig=0x4000...
+        (BitsType{2} << Fmt::exp_offset) |
+            MantMaskNoJ, // unnormal: exp=2, J=0, frac=all 1s
+        ((ExpMax - 1) << Fmt::exp_offset) |
+            MantMaskNoJ, // unnormal near max: exp=max-1, J=0, frac=all 1s
         // === Pseudo-denormals: exp=0, J=1 ===
-        JBit,                                                           // pseudo-denormal: exp=0, J=1, frac=0
-        SignBit | JBit,                                                 // negative pseudo-denormal
-        JBit | 1,                                                       // pseudo-denormal: exp=0, J=1, frac=1
-        JBit | MantMaskNoJ,                                             // pseudo-denormal: exp=0, J=1, frac=all 1s
+        JBit,                   // pseudo-denormal: exp=0, J=1, frac=0
+        SignBit | JBit,         // negative pseudo-denormal
+        JBit | 1,               // pseudo-denormal: exp=0, J=1, frac=1
+        JBit | MantMaskNoJ,     // pseudo-denormal: exp=0, J=1, frac=all 1s
         // === Pseudo-infinities: exp=max, J=0, frac=0 ===
-        (ExpMax << Fmt::exp_offset),                                    // pseudo-infinity
-        SignBit | (ExpMax << Fmt::exp_offset),                          // negative pseudo-infinity
+        (ExpMax << Fmt::exp_offset),           // pseudo-infinity
+        SignBit | (ExpMax << Fmt::exp_offset),  // negative pseudo-infinity
         // === Pseudo-NaNs: exp=max, J=0, frac!=0 ===
-        (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 2)),       // pseudo-QNaN
-        (ExpMax << Fmt::exp_offset) | 1,                               // pseudo-SNaN min
-        (ExpMax << Fmt::exp_offset) | MantMaskNoJ,                    // pseudo-SNaN max
+        (ExpMax << Fmt::exp_offset) | (BitsType{1} << (M - 2)), // pseudo-QNaN
+        (ExpMax << Fmt::exp_offset) | 1,        // pseudo-SNaN min
+        (ExpMax << Fmt::exp_offset) | MantMaskNoJ, // pseudo-SNaN max
     }};
   }
 }

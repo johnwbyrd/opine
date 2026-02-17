@@ -12,10 +12,18 @@ add_executable(test_softfloat_smoke softfloat/test_softfloat_smoke.cpp)
 target_link_libraries(test_softfloat_smoke PRIVATE softfloat)
 add_test(NAME test_softfloat_smoke COMMAND test_softfloat_smoke)
 
-# Oracle tests (only if MPFR available)
+# doctest (test-only dependency)
+include(FetchContent)
+FetchContent_Declare(doctest
+    GIT_REPOSITORY https://github.com/doctest/doctest.git
+    GIT_TAG v2.4.11
+)
+FetchContent_MakeAvailable(doctest)
+
+# Oracle cross-validation tests (only if MPFR available)
 if(OPINE_HAS_ORACLE)
-    add_executable(test_mpfr_exact oracle/test_mpfr_exact.cpp)
-    target_link_libraries(test_mpfr_exact PRIVATE opine softfloat MPFR::MPFR)
-    target_include_directories(test_mpfr_exact PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-    add_test(NAME test_mpfr_exact COMMAND test_mpfr_exact)
+    add_executable(test_oracle oracle/test_oracle.cpp)
+    target_link_libraries(test_oracle PRIVATE opine softfloat MPFR::MPFR doctest_with_main)
+    target_include_directories(test_oracle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_oracle COMMAND test_oracle)
 endif()

@@ -1,17 +1,19 @@
-#ifndef OPINE_TESTS_ORACLE_MPFR_EXACT_HPP
-#define OPINE_TESTS_ORACLE_MPFR_EXACT_HPP
+#ifndef OPINE_TESTS_HARNESS_IMPL_MPFR_HPP
+#define OPINE_TESTS_HARNESS_IMPL_MPFR_HPP
 
-// Oracle Part 1: MPFR integration for exact mathematical results.
+// MPFR adapter: one implementation among equals.
 //
-// Provides:
-//   MpfrFloat        — RAII wrapper around mpfr_t
-//   decodeToMpfr     — Convert any OPINE bit pattern to its exact MPFR value
-//   mpfrExactOp      — Exact arithmetic at 256-bit precision
-//   mpfrRoundToFormat — Round MPFR value to any IEEE 754-style format
+// Provides MpfrAdapter<FloatType> satisfying the adapter interface:
+//   dispatch(Op, BitsType, BitsType) -> TestOutput<BitsType>
 //
-// All bit-pattern logic operates on BitsType (from FloatType::storage_type).
-// The ONLY fixed-width C types appear at MPFR API boundaries, bridged by
-// bitsToMpz / mpzToBits helpers that work for any width.
+// Internally contains:
+//   MpfrFloat         — RAII wrapper around mpfr_t
+//   decodeToMpfr      — bit pattern -> exact MPFR value (any format/encoding)
+//   mpfrExactOp       — exact arithmetic at 256-bit precision
+//   mpfrRoundToFormat — round MPFR value back to format bits
+//   branchlessDecode  — alternative decode for cross-checking
+//
+// These are internals of the MPFR adapter, not a privileged oracle API.
 
 #include <cstdint>
 #include <cstring>
@@ -20,15 +22,13 @@
 #include <gmp.h>
 #include <mpfr.h>
 
+#include "harness/ops.hpp"
 #include "opine/opine.hpp"
 
-namespace opine::oracle {
+namespace opine::testing {
 
 // Working precision for exact computation. 256 bits is far more than
-// enough for any format up to binary128. add/sub/mul of binary64
-// inputs produce exact results at this precision; division is
-// correctly rounded to 256 bits (more than enough headroom to
-// determine the correctly-rounded result in any target format).
+// enough for any format up to binary128.
 inline constexpr mpfr_prec_t ExactPrecision = 256;
 
 // ===================================================================
@@ -37,17 +37,15 @@ inline constexpr mpfr_prec_t ExactPrecision = 256;
 
 class MpfrFloat {
 public:
-  explicit MpfrFloat(mpfr_prec_t prec = ExactPrecision) {
-    mpfr_init2(Val, prec);
+  explicit MpfrFloat(mpfr_prec_t Prec = ExactPrecision) {
+    mpfr_init2(Val, Prec);
   }
 
   ~MpfrFloat() { mpfr_clear(Val); }
 
-  // Non-copyable (mpfr_t holds heap-allocated limb data)
   MpfrFloat(const MpfrFloat &) = delete;
   MpfrFloat &operator=(const MpfrFloat &) = delete;
 
-  // Move: steal contents, leave source in a valid NaN state
   MpfrFloat(MpfrFloat &&Other) noexcept {
     Val[0] = Other.Val[0];
     mpfr_init2(Other.Val, 2);
@@ -64,13 +62,11 @@ public:
     return *this;
   }
 
-  // Access the underlying mpfr_t for MPFR C API calls
   mpfr_ptr get() { return Val; }
   mpfr_srcptr get() const { return Val; }
   operator mpfr_ptr() { return Val; }
   operator mpfr_srcptr() const { return Val; }
 
-  // Special value queries
   bool isNan() const { return mpfr_nan_p(Val) != 0; }
   bool isInf() const { return mpfr_inf_p(Val) != 0; }
   bool isZero() const { return mpfr_zero_p(Val) != 0; }
@@ -87,8 +83,7 @@ private:
 
 namespace detail {
 
-template <typename BitsType>
-void bitsToMpz(mpz_t Z, BitsType Val) {
+template <typename BitsType> void bitsToMpz(mpz_t Z, BitsType Val) {
   constexpr int NumBytes = sizeof(BitsType);
   unsigned char Bytes[NumBytes];
   for (int I = 0; I < NumBytes; ++I) {
@@ -98,8 +93,7 @@ void bitsToMpz(mpz_t Z, BitsType Val) {
   mpz_import(Z, NumBytes, -1, 1, 0, 0, Bytes);
 }
 
-template <typename BitsType>
-BitsType mpzToBits(const mpz_t Z) {
+template <typename BitsType> BitsType mpzToBits(const mpz_t Z) {
   constexpr int NumBytes = sizeof(BitsType);
   unsigned char Bytes[NumBytes] = {};
   mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
@@ -107,14 +101,6 @@ BitsType mpzToBits(const mpz_t Z) {
   for (int I = NumBytes - 1; I >= 0; --I)
     Val = (Val << 8) | BitsType(Bytes[I]);
   return Val;
-}
-
-// Extract a field of `Width` bits starting at bit `Offset` from `Bits`.
-template <typename BitsType>
-inline constexpr BitsType extractField(BitsType Bits, int Offset, int Width) {
-  if (Width == 0)
-    return BitsType{0};
-  return (Bits >> Offset) & ((BitsType{1} << Width) - 1);
 }
 
 } // namespace detail
@@ -137,9 +123,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   MpfrFloat Result;
 
-  // ------------------------------------------------------------------
   // Phase 1: Check for special values identified by complete bit pattern
-  // ------------------------------------------------------------------
 
   if constexpr (Enc::nan_encoding == NanEncoding::TrapValue) {
     constexpr BitsType TrapValue = BitsType{1} << (TotalBits - 1);
@@ -177,23 +161,21 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   if constexpr (Enc::nan_encoding == NanEncoding::NegativeZeroBitPattern) {
     BitsType RawSign =
-        detail::extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
+        extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
     BitsType RawExp =
-        detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
+        extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
     BitsType RawMant =
-        detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+        extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
     if (RawSign != 0 && RawExp == 0 && RawMant == 0) {
       mpfr_set_nan(Result);
       return Result;
     }
   }
 
-  // ------------------------------------------------------------------
   // Phase 2: Determine sign and extract magnitude fields
-  // ------------------------------------------------------------------
 
   BitsType RawSign =
-      detail::extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
+      extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
   bool IsNegative = false;
 
   BitsType MagExp;
@@ -201,8 +183,8 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   if constexpr (Enc::sign_encoding == SignEncoding::SignMagnitude) {
     IsNegative = (RawSign != 0);
-    MagExp = detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    MagMant = detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+    MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
+    MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
   } else if constexpr (Enc::sign_encoding == SignEncoding::TwosComplement) {
     IsNegative = (RawSign != 0);
     if (IsNegative) {
@@ -213,12 +195,12 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
       } else {
         Positive = ~Bits + 1;
       }
-      MagExp = detail::extractField(Positive, Fmt::exp_offset, Fmt::exp_bits);
+      MagExp = extractField(Positive, Fmt::exp_offset, Fmt::exp_bits);
       MagMant =
-          detail::extractField(Positive, Fmt::mant_offset, Fmt::mant_bits);
+          extractField(Positive, Fmt::mant_offset, Fmt::mant_bits);
     } else {
-      MagExp = detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+      MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
+      MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
     }
   } else if constexpr (Enc::sign_encoding == SignEncoding::OnesComplement) {
     IsNegative = (RawSign != 0);
@@ -226,25 +208,20 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
       constexpr BitsType ExpMask = (BitsType{1} << Fmt::exp_bits) - 1;
       constexpr BitsType MantMask = (BitsType{1} << Fmt::mant_bits) - 1;
       MagExp =
-          detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits) ^ ExpMask;
+          extractField(Bits, Fmt::exp_offset, Fmt::exp_bits) ^ ExpMask;
       MagMant =
-          detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits) ^
+          extractField(Bits, Fmt::mant_offset, Fmt::mant_bits) ^
           MantMask;
     } else {
-      MagExp = detail::extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = detail::extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+      MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
+      MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
     }
   }
 
-  // ------------------------------------------------------------------
   // Phase 3: Check for special values identified by field values
-  // ------------------------------------------------------------------
 
   constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
 
-  // Inf must be checked before NaN for explicit-bit formats, because
-  // Inf has a non-zero mantissa field (J=1, frac=0) which would
-  // otherwise be caught by the NaN check (MagMant != 0).
   if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
     if constexpr (Enc::has_implicit_bit) {
       if (MagExp == ExpMax && MagMant == 0) {
@@ -252,9 +229,6 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
         return Result;
       }
     } else {
-      // Explicit-bit: infinity = max exponent with no fraction bits,
-      // regardless of J-bit.  Covers both canonical infinity (J=1, frac=0)
-      // and pseudo-infinity (J=0, frac=0).
       constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
       constexpr BitsType FracMask = JBit - 1;
       if (MagExp == ExpMax && (MagMant & FracMask) == 0) {
@@ -271,9 +245,6 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
         return Result;
       }
     } else {
-      // Explicit-bit: infinity already caught above, so any remaining
-      // max-exponent encoding with non-zero mantissa is NaN (canonical
-      // or pseudo-NaN).
       if (MagExp == ExpMax && MagMant != 0) {
         mpfr_set_nan(Result);
         return Result;
@@ -281,9 +252,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
     }
   }
 
-  // ------------------------------------------------------------------
   // Phase 4: Zero detection
-  // ------------------------------------------------------------------
 
   if (MagExp == 0 && MagMant == 0) {
     if constexpr (Enc::negative_zero == NegativeZero::Exists) {
@@ -294,9 +263,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
     return Result;
   }
 
-  // ------------------------------------------------------------------
   // Phase 5: Decode finite value (normal or denormal)
-  // ------------------------------------------------------------------
 
   constexpr int Bias = FloatType::exponent_bias;
   mpfr_exp_t Exponent;
@@ -304,19 +271,15 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   if constexpr (Enc::has_implicit_bit) {
     if (MagExp == 0) {
-      // Denormal: no implicit bit, minimum exponent
       Exponent = 1 - Bias - Fmt::mant_bits;
       Mantissa = MagMant;
     } else {
-      // Normal: implicit leading 1
       Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
                  Fmt::mant_bits;
       Mantissa = (BitsType{1} << Fmt::mant_bits) | MagMant;
     }
   } else {
-    // No implicit bit (e.g., extFloat80): mantissa stored explicitly
     if (MagExp == 0) {
-      // Denormal: minimum exponent (same rule as implicit-bit)
       Exponent = 1 - Bias - (Fmt::mant_bits - 1);
     } else {
       Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
@@ -325,7 +288,6 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
     Mantissa = MagMant;
   }
 
-  // Convert mantissa to mpz, then to MPFR with exponent — one path, any width
   mpz_t Z;
   mpz_init(Z);
   detail::bitsToMpz(Z, Mantissa);
@@ -342,8 +304,6 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 // ===================================================================
 // Exact arithmetic operations at 256-bit precision
 // ===================================================================
-
-enum class Op { Add, Sub, Mul, Div };
 
 inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
                              const MpfrFloat &B) {
@@ -363,22 +323,6 @@ inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
     break;
   }
   return Result;
-}
-
-inline MpfrFloat mpfrExactAdd(const MpfrFloat &A, const MpfrFloat &B) {
-  return mpfrExactOp(Op::Add, A, B);
-}
-
-inline MpfrFloat mpfrExactSub(const MpfrFloat &A, const MpfrFloat &B) {
-  return mpfrExactOp(Op::Sub, A, B);
-}
-
-inline MpfrFloat mpfrExactMul(const MpfrFloat &A, const MpfrFloat &B) {
-  return mpfrExactOp(Op::Mul, A, B);
-}
-
-inline MpfrFloat mpfrExactDiv(const MpfrFloat &A, const MpfrFloat &B) {
-  return mpfrExactOp(Op::Div, A, B);
 }
 
 // ===================================================================
@@ -404,8 +348,6 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
       return (1 << ExpBits) - 1;
   }();
 
-  // For explicit-bit formats, the effective mantissa precision for rounding
-  // is one less (the J-bit is explicit, not implicit).
   constexpr int RoundingMantBits =
       Enc::has_implicit_bit ? MantBits : (MantBits - 1);
 
@@ -419,7 +361,6 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
         return (ExpAllOnes << Fmt::exp_offset) |
                (BitsType{1} << (MantBits - 1));
       } else {
-        // Explicit bit: J=1, quiet bit set
         constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
         constexpr BitsType QuietBit = BitsType{1} << (MantBits - 2);
         return (ExpAllOnes << Fmt::exp_offset) | JBit | QuietBit;
@@ -474,7 +415,6 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     BitsType IntSig = detail::mpzToBits<BitsType>(Z);
     mpz_clear(Z);
 
-    // Rounding may carry into the next exponent
     if (IntSig >= (BitsType{1} << (RoundingMantBits + 1))) {
       IeeeExp++;
       IntSig >>= 1;
@@ -482,7 +422,6 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
     int BiasedExp = IeeeExp + Bias;
     if (BiasedExp > MaxBiasedExp) {
-      // Overflow to Inf
       if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
         BitsType InfBits;
         if constexpr (Enc::has_implicit_bit) {
@@ -499,12 +438,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     }
 
     StoredExp = static_cast<BitsType>(BiasedExp);
-    if constexpr (Enc::has_implicit_bit) {
-      StoredMant = IntSig & MantMask;
-    } else {
-      // Explicit bit: store the full significand including J-bit
-      StoredMant = IntSig & MantMask;
-    }
+    StoredMant = IntSig & MantMask;
 
   } else {
     // Subnormal range
@@ -531,11 +465,9 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
         StoredMant = Mant;
       }
     } else {
-      // Explicit bit: subnormals have J=0
       if (Mant >= (BitsType{1} << (MantBits - 1))) {
-        // Rounded up to smallest normal (J=1)
         StoredExp = 1;
-        StoredMant = BitsType{1} << (MantBits - 1); // J=1, frac=0
+        StoredMant = BitsType{1} << (MantBits - 1);
       } else if (Mant == 0) {
         BitsType ZeroBits = 0;
         if (Negative && Enc::negative_zero == NegativeZero::Exists)
@@ -543,7 +475,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
         return ZeroBits;
       } else {
         StoredExp = 0;
-        StoredMant = Mant; // J=0 for subnormals
+        StoredMant = Mant;
       }
     }
   }
@@ -557,6 +489,23 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   return Result;
 }
 
-} // namespace opine::oracle
+// ===================================================================
+// MpfrAdapter — the adapter struct
+// ===================================================================
 
-#endif // OPINE_TESTS_ORACLE_MPFR_EXACT_HPP
+template <typename FloatType> struct MpfrAdapter {
+  using BitsType = typename FloatType::storage_type;
+
+  static constexpr const char *name() { return "MPFR"; }
+
+  TestOutput<BitsType> dispatch(Op O, BitsType A, BitsType B) const {
+    MpfrFloat Ma = decodeToMpfr<FloatType>(A);
+    MpfrFloat Mb = decodeToMpfr<FloatType>(B);
+    MpfrFloat Exact = mpfrExactOp(O, Ma, Mb);
+    return {mpfrRoundToFormat<FloatType>(Exact), 0};
+  }
+};
+
+} // namespace opine::testing
+
+#endif // OPINE_TESTS_HARNESS_IMPL_MPFR_HPP
