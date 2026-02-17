@@ -47,6 +47,20 @@ template <typename BitsType> struct Failure {
   TestOutput<BitsType> OutputB;
 };
 
+template <typename BitsType> struct UnaryFailure {
+  BitsType Input;
+  TestOutput<BitsType> OutputA;
+  TestOutput<BitsType> OutputB;
+};
+
+template <typename BitsType> struct TernaryFailure {
+  BitsType InputA;
+  BitsType InputB;
+  BitsType InputC;
+  TestOutput<BitsType> OutputA;
+  TestOutput<BitsType> OutputB;
+};
+
 struct TestResult {
   int Total = 0;
   int Passed = 0;
@@ -104,6 +118,102 @@ TestResult testAgainst(const char *Name, int HexWidth, IterFn Iter, ImplA A,
 }
 
 // ===================================================================
+// testAgainstUnary — unary harness
+// ===================================================================
+
+template <typename BitsType, typename IterFn, typename ImplA, typename ImplB,
+          typename Comparator>
+TestResult testAgainstUnary(const char *Name, int HexWidth, IterFn Iter,
+                            ImplA A, ImplB B, Comparator Cmp) {
+  TestResult R;
+  UnaryFailure<BitsType> Failures[MaxReportedFailures];
+  int NumReported = 0;
+
+  Iter([&](BitsType ABits) {
+    R.Total++;
+    TestOutput<BitsType> OA = A(ABits);
+    TestOutput<BitsType> OB = B(ABits);
+    if (Cmp(OA, OB)) {
+      R.Passed++;
+    } else {
+      R.Failed++;
+      if (NumReported < MaxReportedFailures) {
+        Failures[NumReported++] = {ABits, OA, OB};
+      }
+    }
+  });
+
+  std::printf("%s: %d/%d passed", Name, R.Passed, R.Total);
+  if (R.Failed > 0) {
+    std::printf(" (%d FAILED)", R.Failed);
+  }
+  std::printf("\n");
+
+  for (int I = 0; I < NumReported; ++I) {
+    auto &F = Failures[I];
+    std::fprintf(stderr, "  FAIL %s: a=0x", Name);
+    printHex(stderr, F.Input, HexWidth);
+    std::fprintf(stderr, "  implA=0x");
+    printHex(stderr, F.OutputA.Bits, HexWidth);
+    std::fprintf(stderr, " implB=0x");
+    printHex(stderr, F.OutputB.Bits, HexWidth);
+    std::fprintf(stderr, "\n");
+  }
+
+  return R;
+}
+
+// ===================================================================
+// testAgainstTernary — ternary harness
+// ===================================================================
+
+template <typename BitsType, typename IterFn, typename ImplA, typename ImplB,
+          typename Comparator>
+TestResult testAgainstTernary(const char *Name, int HexWidth, IterFn Iter,
+                              ImplA A, ImplB B, Comparator Cmp) {
+  TestResult R;
+  TernaryFailure<BitsType> Failures[MaxReportedFailures];
+  int NumReported = 0;
+
+  Iter([&](BitsType ABits, BitsType BBits, BitsType CBits) {
+    R.Total++;
+    TestOutput<BitsType> OA = A(ABits, BBits, CBits);
+    TestOutput<BitsType> OB = B(ABits, BBits, CBits);
+    if (Cmp(OA, OB)) {
+      R.Passed++;
+    } else {
+      R.Failed++;
+      if (NumReported < MaxReportedFailures) {
+        Failures[NumReported++] = {ABits, BBits, CBits, OA, OB};
+      }
+    }
+  });
+
+  std::printf("%s: %d/%d passed", Name, R.Passed, R.Total);
+  if (R.Failed > 0) {
+    std::printf(" (%d FAILED)", R.Failed);
+  }
+  std::printf("\n");
+
+  for (int I = 0; I < NumReported; ++I) {
+    auto &F = Failures[I];
+    std::fprintf(stderr, "  FAIL %s: a=0x", Name);
+    printHex(stderr, F.InputA, HexWidth);
+    std::fprintf(stderr, " b=0x");
+    printHex(stderr, F.InputB, HexWidth);
+    std::fprintf(stderr, " c=0x");
+    printHex(stderr, F.InputC, HexWidth);
+    std::fprintf(stderr, "  implA=0x");
+    printHex(stderr, F.OutputA.Bits, HexWidth);
+    std::fprintf(stderr, " implB=0x");
+    printHex(stderr, F.OutputB.Bits, HexWidth);
+    std::fprintf(stderr, "\n");
+  }
+
+  return R;
+}
+
+// ===================================================================
 // Iteration strategies
 // ===================================================================
 
@@ -141,6 +251,80 @@ template <typename BitsType, int TotalBits> struct RandomPairs {
 
     for (int I = 0; I < Count; ++I)
       Callback(Gen(), Gen());
+  }
+};
+
+// All singles from a list of interesting values.
+template <typename BitsType> struct TargetedSingles {
+  const BitsType *Values;
+  int Count;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    for (int I = 0; I < Count; ++I)
+      Callback(Values[I]);
+  }
+};
+
+// Uniform random singles over the format's bit range.
+template <typename BitsType, int TotalBits> struct RandomSingles {
+  uint64_t Seed;
+  int Count;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    std::mt19937_64 Rng(Seed);
+    constexpr int ChunkBits = 64;
+
+    auto Gen = [&]() -> BitsType {
+      BitsType Val = 0;
+      for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
+        Val |= BitsType(Rng()) << (I * ChunkBits);
+      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
+        Val &= Mask;
+      }
+      return Val;
+    };
+
+    for (int I = 0; I < Count; ++I)
+      Callback(Gen());
+  }
+};
+
+// All triples from a list of interesting values.
+template <typename BitsType> struct TargetedTriples {
+  const BitsType *Values;
+  int Count;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    for (int I = 0; I < Count; ++I)
+      for (int J = 0; J < Count; ++J)
+        for (int K = 0; K < Count; ++K)
+          Callback(Values[I], Values[J], Values[K]);
+  }
+};
+
+// Uniform random triples over the format's bit range.
+template <typename BitsType, int TotalBits> struct RandomTriples {
+  uint64_t Seed;
+  int Count;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    std::mt19937_64 Rng(Seed);
+    constexpr int ChunkBits = 64;
+
+    auto Gen = [&]() -> BitsType {
+      BitsType Val = 0;
+      for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
+        Val |= BitsType(Rng()) << (I * ChunkBits);
+      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
+        Val &= Mask;
+      }
+      return Val;
+    };
+
+    for (int I = 0; I < Count; ++I)
+      Callback(Gen(), Gen(), Gen());
   }
 };
 

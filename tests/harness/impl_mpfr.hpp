@@ -309,18 +309,41 @@ inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
                              const MpfrFloat &B) {
   MpfrFloat Result;
   switch (Operation) {
-  case Op::Add:
-    mpfr_add(Result, A, B, MPFR_RNDN);
-    break;
-  case Op::Sub:
-    mpfr_sub(Result, A, B, MPFR_RNDN);
-    break;
-  case Op::Mul:
-    mpfr_mul(Result, A, B, MPFR_RNDN);
-    break;
-  case Op::Div:
-    mpfr_div(Result, A, B, MPFR_RNDN);
-    break;
+  case Op::Add: mpfr_add(Result, A, B, MPFR_RNDN); break;
+  case Op::Sub: mpfr_sub(Result, A, B, MPFR_RNDN); break;
+  case Op::Mul: mpfr_mul(Result, A, B, MPFR_RNDN); break;
+  case Op::Div: mpfr_div(Result, A, B, MPFR_RNDN); break;
+  case Op::Rem: mpfr_remainder(Result, A, B, MPFR_RNDN); break;
+  default: break;
+  }
+  return Result;
+}
+
+// ===================================================================
+// Exact unary operations at 256-bit precision
+// ===================================================================
+
+inline MpfrFloat mpfrExactUnaryOp(Op Operation, const MpfrFloat &A) {
+  MpfrFloat Result;
+  switch (Operation) {
+  case Op::Sqrt: mpfr_sqrt(Result, A, MPFR_RNDN); break;
+  case Op::Neg: mpfr_neg(Result, A, MPFR_RNDN); break;
+  case Op::Abs: mpfr_abs(Result, A, MPFR_RNDN); break;
+  default: break;
+  }
+  return Result;
+}
+
+// ===================================================================
+// Exact ternary operations at 256-bit precision
+// ===================================================================
+
+inline MpfrFloat mpfrExactTernaryOp(Op Operation, const MpfrFloat &A,
+                                    const MpfrFloat &B, const MpfrFloat &C) {
+  MpfrFloat Result;
+  switch (Operation) {
+  case Op::MulAdd: mpfr_fma(Result, A, B, C, MPFR_RNDN); break;
+  default: break;
   }
   return Result;
 }
@@ -501,7 +524,32 @@ template <typename FloatType> struct MpfrAdapter {
   TestOutput<BitsType> dispatch(Op O, BitsType A, BitsType B) const {
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Mb = decodeToMpfr<FloatType>(B);
+
+    // Comparison ops: direct comparison, no rounding
+    switch (O) {
+    case Op::Eq: return {BitsType(mpfr_equal_p(Ma, Mb) ? 1 : 0), 0};
+    case Op::Lt: return {BitsType(mpfr_less_p(Ma, Mb) ? 1 : 0), 0};
+    case Op::Le: return {BitsType(mpfr_lessequal_p(Ma, Mb) ? 1 : 0), 0};
+    default: break;
+    }
+
+    // Arithmetic ops: compute exact, round to format
     MpfrFloat Exact = mpfrExactOp(O, Ma, Mb);
+    return {mpfrRoundToFormat<FloatType>(Exact), 0};
+  }
+
+  TestOutput<BitsType> dispatchUnary(Op O, BitsType A) const {
+    MpfrFloat Ma = decodeToMpfr<FloatType>(A);
+    MpfrFloat Exact = mpfrExactUnaryOp(O, Ma);
+    return {mpfrRoundToFormat<FloatType>(Exact), 0};
+  }
+
+  TestOutput<BitsType> dispatchTernary(Op O, BitsType A, BitsType B,
+                                       BitsType C) const {
+    MpfrFloat Ma = decodeToMpfr<FloatType>(A);
+    MpfrFloat Mb = decodeToMpfr<FloatType>(B);
+    MpfrFloat Mc = decodeToMpfr<FloatType>(C);
+    MpfrFloat Exact = mpfrExactTernaryOp(O, Ma, Mb, Mc);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 };

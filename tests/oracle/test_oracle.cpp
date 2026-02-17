@@ -32,9 +32,7 @@ static SoftFloatInit GlobalSoftFloatInit;
 // ===================================================================
 // verifyAgreement — generic pairwise comparison
 // ===================================================================
-// Compares two adapters on all four arithmetic operations for a given
-// FloatType. Uses the existing test_against() harness with targeted
-// edge cases + random pairs.
+// Compares two adapters on all binary operations for a given FloatType.
 
 template <typename FloatType, typename AdapterA, typename AdapterB>
 void verifyAgreement(const AdapterA &A, const AdapterB &B) {
@@ -49,8 +47,10 @@ void verifyAgreement(const AdapterA &A, const AdapterB &B) {
       RandomPairs<BitsType, TotalBits>{42, 1000000});
 
   NanAwareBitExact<FloatType> Cmp;
+  BitExactIgnoreFlags<BitsType> CmpExact;
 
-  for (auto O : {Op::Add, Op::Sub, Op::Mul, Op::Div}) {
+  for (auto O :
+       {Op::Add, Op::Sub, Op::Mul, Op::Div, Op::Rem, Op::Eq, Op::Lt, Op::Le}) {
     SUBCASE(opName(O)) {
       auto ImplA = [&](BitsType X, BitsType Y) {
         return A.dispatch(O, X, Y);
@@ -58,28 +58,132 @@ void verifyAgreement(const AdapterA &A, const AdapterB &B) {
       auto ImplB = [&](BitsType X, BitsType Y) {
         return B.dispatch(O, X, Y);
       };
-      auto R =
-          testAgainst<BitsType>(opName(O), HexWidth, Iter, ImplA, ImplB, Cmp);
+      // Comparison ops produce 0/1, use exact comparison
+      if (O == Op::Eq || O == Op::Lt || O == Op::Le) {
+        auto R = testAgainst<BitsType>(opName(O), HexWidth, Iter, ImplA, ImplB,
+                                       CmpExact);
+        CHECK(R.Failed == 0);
+      } else {
+        auto R =
+            testAgainst<BitsType>(opName(O), HexWidth, Iter, ImplA, ImplB, Cmp);
+        CHECK(R.Failed == 0);
+      }
+    }
+  }
+}
+
+// ===================================================================
+// verifyUnaryAgreement — unary operations
+// ===================================================================
+
+template <typename FloatType, typename AdapterA, typename AdapterB>
+void verifyUnaryAgreement(const AdapterA &A, const AdapterB &B) {
+  using BitsType = typename FloatType::storage_type;
+  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int HexWidth = (TotalBits + 3) / 4;
+
+  constexpr auto Interesting = interestingValues<FloatType>();
+  auto Iter = combined(
+      TargetedSingles<BitsType>{Interesting.data(),
+                                static_cast<int>(Interesting.size())},
+      RandomSingles<BitsType, TotalBits>{42, 1000000});
+
+  NanAwareBitExact<FloatType> Cmp;
+
+  for (auto O : {Op::Sqrt, Op::Neg, Op::Abs}) {
+    SUBCASE(opName(O)) {
+      auto ImplA = [&](BitsType X) { return A.dispatchUnary(O, X); };
+      auto ImplB = [&](BitsType X) { return B.dispatchUnary(O, X); };
+      auto R = testAgainstUnary<BitsType>(opName(O), HexWidth, Iter, ImplA,
+                                          ImplB, Cmp);
       CHECK(R.Failed == 0);
     }
   }
 }
 
 // ===================================================================
-// Arithmetic agreement tests
+// verifyTernaryAgreement — ternary operations (MulAdd)
 // ===================================================================
 
-TEST_CASE_TEMPLATE("MPFR vs SoftFloat", T, float16, float32, float64,
+template <typename FloatType, typename AdapterA, typename AdapterB>
+void verifyTernaryAgreement(const AdapterA &A, const AdapterB &B) {
+  using BitsType = typename FloatType::storage_type;
+  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int HexWidth = (TotalBits + 3) / 4;
+
+  constexpr auto Interesting = interestingValues<FloatType>();
+  auto Iter = combined(
+      TargetedTriples<BitsType>{Interesting.data(),
+                                static_cast<int>(Interesting.size())},
+      RandomTriples<BitsType, TotalBits>{42, 500000});
+
+  NanAwareBitExact<FloatType> Cmp;
+
+  for (auto O : {Op::MulAdd}) {
+    SUBCASE(opName(O)) {
+      auto ImplA = [&](BitsType X, BitsType Y, BitsType Z) {
+        return A.dispatchTernary(O, X, Y, Z);
+      };
+      auto ImplB = [&](BitsType X, BitsType Y, BitsType Z) {
+        return B.dispatchTernary(O, X, Y, Z);
+      };
+      auto R = testAgainstTernary<BitsType>(opName(O), HexWidth, Iter, ImplA,
+                                            ImplB, Cmp);
+      CHECK(R.Failed == 0);
+    }
+  }
+}
+
+// ===================================================================
+// Binary agreement tests
+// ===================================================================
+
+TEST_CASE_TEMPLATE("MPFR vs SoftFloat: binary", T, float16, float32, float64,
                    extFloat80, float128) {
   verifyAgreement<T>(MpfrAdapter<T>{}, SoftFloatAdapter<T>{});
 }
 
-TEST_CASE_TEMPLATE("Native vs MPFR", T, float32, float64) {
+TEST_CASE_TEMPLATE("Native vs MPFR: binary", T, float32, float64) {
   verifyAgreement<T>(NativeAdapter<T>{}, MpfrAdapter<T>{});
 }
 
-TEST_CASE_TEMPLATE("Native vs SoftFloat", T, float32, float64) {
+TEST_CASE_TEMPLATE("Native vs SoftFloat: binary", T, float32, float64) {
   verifyAgreement<T>(NativeAdapter<T>{}, SoftFloatAdapter<T>{});
+}
+
+// ===================================================================
+// Unary agreement tests
+// ===================================================================
+
+TEST_CASE_TEMPLATE("MPFR vs SoftFloat: unary", T, float16, float32, float64,
+                   extFloat80, float128) {
+  verifyUnaryAgreement<T>(MpfrAdapter<T>{}, SoftFloatAdapter<T>{});
+}
+
+TEST_CASE_TEMPLATE("Native vs MPFR: unary", T, float32, float64) {
+  verifyUnaryAgreement<T>(NativeAdapter<T>{}, MpfrAdapter<T>{});
+}
+
+TEST_CASE_TEMPLATE("Native vs SoftFloat: unary", T, float32, float64) {
+  verifyUnaryAgreement<T>(NativeAdapter<T>{}, SoftFloatAdapter<T>{});
+}
+
+// ===================================================================
+// Ternary agreement tests (MulAdd)
+// ===================================================================
+// Note: extFloat80 excluded — SoftFloat has no extF80_mulAdd.
+
+TEST_CASE_TEMPLATE("MPFR vs SoftFloat: ternary", T, float16, float32, float64,
+                   float128) {
+  verifyTernaryAgreement<T>(MpfrAdapter<T>{}, SoftFloatAdapter<T>{});
+}
+
+TEST_CASE_TEMPLATE("Native vs MPFR: ternary", T, float32, float64) {
+  verifyTernaryAgreement<T>(NativeAdapter<T>{}, MpfrAdapter<T>{});
+}
+
+TEST_CASE_TEMPLATE("Native vs SoftFloat: ternary", T, float32, float64) {
+  verifyTernaryAgreement<T>(NativeAdapter<T>{}, SoftFloatAdapter<T>{});
 }
 
 // ===================================================================
