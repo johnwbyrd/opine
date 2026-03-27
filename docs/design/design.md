@@ -233,20 +233,47 @@ Independent of Number, Layout, Rounding, and Platform.
 
 ### Axis 5: Platform
 
-What the target hardware can do.
+The target hardware. Platform has two roles: it provides structural
+parameters that affect algorithmic decisions, and it serves as an
+identity for template specialization.
+
+**Structural parameters** — properties the code generator needs
+for algorithmic decisions above the individual-operation level:
 
 ```
 type_policy:            ExactWidth | LeastWidth | Fastest
-machine_word_bits:      int
-has_hardware_multiply:  bool
-has_barrel_shifter:     bool
-has_bcd_arithmetic:     bool
-has_clz:                bool
-has_ctz:                bool
+machine_word_bits:      int (determines SWAR lane count, multi-word strategies)
+register_file_depth:    int (determines BLAS tile sizes, spill thresholds)
 ```
 
-Determines implementation strategy selection, SWAR lane counts, and
-register pressure constraints.
+**Hardware capabilities** — expressed through the existence of
+template specializations, not through boolean flags. All operations
+have generic software implementations. Platforms provide
+specializations that the compiler prefers via partial template
+matching:
+
+```cpp
+// Generic: any platform, any radix, any width. Slow but correct.
+template <typename Platform, typename Op, typename In, typename Out>
+struct Implementation;
+
+// MOS6502 + Add + radix=10 → hardware BCD mode (SED; ADC)
+// CortexM4 + Multiply + 32-bit binary → hardware MUL
+// AVX512 + FMA + 32-bit binary → VFMADD231PS
+// zArch + Multiply + radix=10, digit_width=4 → decimal MP instruction
+// CUDA_SM90 + MatMul + FP8×FP8→FP32 → tensor core
+```
+
+The template matching keys on Platform identity, Operation,
+and the input/output Number types (which carry radix, digit_width,
+and width). New hardware features are new specializations — no
+struct modification needed. If no specialization exists for a
+given combination, the generic implementation provides correct
+(but slow) behavior.
+
+The generic implementations also serve as the test oracle: they
+define correct behavior by construction. Specializations are
+optimizations that must produce identical results.
 
 ## ComputeFormat
 
