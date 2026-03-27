@@ -178,7 +178,7 @@ of entire word, no implicit bit, bias 128, no NaN/Inf/denormals.
 One's complement of entire word, no implicit bit, bias 1024, no
 NaN/Inf/denormals.
 
-**rbj's two's complement.** Two's complement of entire word, implicit
+**Integer-ordered two's complement.** Two's complement of entire word, implicit
 bit, bias 2^(E-1), NaN at trap value (0x80...0), infinity at integer
 extremes.
 
@@ -203,7 +203,7 @@ The significand, across all known formats, can be described as an array
 of N fields, each `digit_width` bits wide:
 
 - `digit_width = 1`: Binary. Covers IEEE, FFP, MBF, IBM HFP, PDP-10,
-  CDC 6600, rbj, posit fractions, all ML formats, BID significands,
+  CDC 6600, integer-ordered TC, posit fractions, all ML formats, BID significands,
   fixed-point Q formats, integers.
 - `digit_width = 4`: Nibble. Covers COMP-3, packed BCD, HP/TI
   calculator BCD, 8087 packed BCD, DPD (as compressed nibble pairs).
@@ -248,7 +248,7 @@ enumerating every combination.
 The exponent base is an independent parameter, never explicitly 2,
 that takes real values from the historical record:
 
-- 2: IEEE 754 binary, FFP, MBF, PDP-10, CDC 6600, rbj, posits
+- 2: IEEE 754 binary, FFP, MBF, PDP-10, CDC 6600, integer-ordered TC, posits
 - 8: Burroughs B5500, Ferranti Atlas
 - 10: Burroughs Medium Systems, IEEE 754 decimal
 - 16: IBM System/360 HFP, Xerox Sigma, BRLESC

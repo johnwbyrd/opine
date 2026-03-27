@@ -6,7 +6,7 @@ A correct, minimal architecture that can express every numeric format
 that has ever existed: IEEE 754 binary and decimal, historical formats
 (IBM HFP, PDP-10, CDC 6600, Xerox Sigma, Burroughs), BCD packed and
 zoned decimal, calculator formats (HP, TI, Casio), ML accelerator
-formats (bfloat16, FP8, TensorFloat-32), rbj's two's complement,
+formats (bfloat16, FP8, TensorFloat-32), integer-ordered two's complement,
 Microsoft Binary Format, Motorola FFP, posits, string representations,
 fixed-point, and integers — within a single compositional framework.
 
@@ -194,7 +194,7 @@ Same Number, different Layout:
   (decimal digits), different packing.
 
 Same Layout, different Number:
-- IEEE binary32 and rbj two's complement float32 use the same
+- IEEE binary32 and integer-ordered two's complement float32 use the same
   `[S1][E8][M23]` layout at the same bit offsets. Different Number
   (different sign method, different special values).
 
@@ -351,7 +351,7 @@ Number decomposition for each known format.
 | FFP (Amiga) | 2 | 1 | 24* | 2 | 1 | 7 | 2 | Explicit | Unsigned | Biased(64) |
 | MBF-32 | 2 | 1 | 24* | 2 | 1 | 8 | 2 | Explicit | Unsigned | Biased(129) |
 | MBF-40 | 2 | 1 | 32* | 2 | 1 | 8 | 2 | Explicit | Unsigned | Biased(129) |
-| rbj TC float32 | 2 | 1 | 24* | 2 | 1 | 8 | 2 | RC(2) | Unsigned | Biased(128) |
+| IntegerOrdered float32 | 2 | 1 | 24* | 2 | 1 | 8 | 2 | RC(2) | Unsigned | Biased(128) |
 | PDP-10 | 2 | 1 | 27 | 2 | 1 | 8 | 2 | RC(2) | Unsigned | Biased(128) |
 | CDC 6600 | 2 | 1 | 48 | 2 | 1 | 11 | 2 | DRC(2) | Unsigned | Biased(1024) |
 
@@ -440,8 +440,8 @@ using float32 = Float<IEEE754Number<8, 23>,
                       IEEE754Layout<8, 23>,
                       rounding::ToNearestTiesToEven>;
 
-// rbj two's complement: same Layout, different Number
-using rbj32 = Float<RbjNumber<8, 23>,
+// Integer-ordered two's complement: same Layout, different Number
+using io32 = Float<IntegerOrderedNumber<8, 23>,
                     IEEE754Layout<8, 23>,
                     rounding::ToNearestTiesToEven>;
 
@@ -463,7 +463,7 @@ using posit32 = Float<PositNumber<32, 2>,
 
 The existing `Format` template is a specific composite Layout for
 digit_width=1 formats with fixed field boundaries. The existing
-encoding bundles (IEEE754, RbjTwosComplement, PDP10, CDC6600, etc.)
+encoding bundles (IEEE754, IntegerOrdered, PDP10, CDC6600, etc.)
 are specific composite Numbers. The existing Rounding, Exceptions,
 and Platform axes are unchanged.
 
