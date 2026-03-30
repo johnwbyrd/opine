@@ -210,7 +210,7 @@ The policy application layer is:
   there is any doubt about whether a step is right, the step is too
   clever.
 
-- **Policy-parameterized.** Takes Format, Encoding, and Rounding as
+- **Policy-parameterized.** Takes Number, Layout, and Rounding as
   parameters and applies them explicitly. The same code handles IEEE
   754, rbj's two's complement, E4M3FNUZ, Relaxed, and any future
   encoding.
@@ -225,7 +225,7 @@ Given: exact result from MPFR (sign, exact mantissa, exact exponent)
    - Is the exact result too large to represent? (overflow)
    - Was the operation invalid? (0 × Inf, 0/0, Inf - Inf, etc.)
 
-2. Handle overflow per Encoding:
+2. Handle overflow per Number:
    - ReservedExponent Inf → return infinity bit pattern
    - IntegerExtremes Inf → return max/min integer bit pattern
    - No Inf → saturate to largest finite value
@@ -233,7 +233,7 @@ Given: exact result from MPFR (sign, exact mantissa, exact exponent)
 
 3. Determine target mantissa width:
    - Is the result in the denormal range? (exponent < E_min)
-   - If so, does Encoding flush denormals?
+   - If so, does Number flush denormals?
      - FlushToZero → return zero, set underflow flag
      - Full → compute right-shift amount for gradual underflow
    - If not, mantissa width is M bits (+ implicit bit if applicable)
@@ -251,7 +251,7 @@ Given: exact result from MPFR (sign, exact mantissa, exact exponent)
    - If result is in denormal range and inexact, set underflow flag
    - If result rounded to zero, set underflow flag
 
-6. Pack result per Encoding:
+6. Pack result per Number + Layout:
    - SignMagnitude: sign bit | biased exponent | stored mantissa
    - TwosComplement: pack as positive, then conditionally negate
    - OnesComplement: pack as positive, then conditionally complement
@@ -274,10 +274,10 @@ struct OracleResult {
     ExceptionFlags flags;     // which exceptions occurred
 };
 
-template <typename Format, typename Encoding, typename Rounding>
+template <typename Number, typename Layout, typename Rounding>
 OracleResult oracle_add(uint64_t a_bits, uint64_t b_bits);
 
-template <typename Format, typename Encoding, typename Rounding>
+template <typename Number, typename Layout, typename Rounding>
 OracleResult oracle_multiply(uint64_t a_bits, uint64_t b_bits);
 
 // etc. for subtract, divide, compare, negate, abs, conversions
@@ -285,7 +285,7 @@ OracleResult oracle_multiply(uint64_t a_bits, uint64_t b_bits);
 
 Internally, each function:
 
-1. Unpacks input bit patterns into MPFR values (respecting the Encoding
+1. Unpacks input bit patterns into MPFR values (respecting Number + Layout
    to interpret the bit pattern correctly — sign-magnitude vs. two's
    complement, etc.)
 2. Performs the operation in MPFR at high precision (e.g., 256 bits)
@@ -406,7 +406,7 @@ coverage model:
 ```cpp
 // Every input pair for a given format. Feasible for FP8 (65,536
 // pairs), slow but possible for FP16 (~4.3 billion pairs).
-template <typename Format>
+template <typename Number>
 struct Exhaustive {
     // Iterates i from 0..2^N-1, j from 0..2^N-1
     // Yields (storage_type(i), storage_type(j))
@@ -415,7 +415,7 @@ struct Exhaustive {
 // Specific input pairs chosen to exercise known-difficult cases.
 // Zero boundaries, overflow boundaries, rounding boundaries,
 // special value interactions, catastrophic cancellation.
-template <typename Format, typename Encoding>
+template <typename Number, typename Layout>
 struct Targeted {
     // Yields pairs from a hand-curated list.
     // The list depends on the encoding (two's complement has
@@ -424,7 +424,7 @@ struct Targeted {
 
 // Uniform random sampling over the input space. Used for FP32
 // binary operations where exhaustive is infeasible.
-template <typename Format>
+template <typename Number>
 struct Random {
     uint64_t seed;
     size_t count;
@@ -439,7 +439,7 @@ struct ExternalVectors {
 };
 
 // Unary variant: iterates single values, not pairs.
-template <typename Format>
+template <typename Number>
 struct ExhaustiveUnary {
     // Iterates i from 0..2^N-1
     // Yields storage_type(i)
@@ -454,15 +454,15 @@ works:
 ```cpp
 // OPINE operation
 auto opine_add = [](uint64_t a, uint64_t b) -> TestOutput {
-    auto ua = unpack<Format, Encoding>(a);
-    auto ub = unpack<Format, Encoding>(b);
-    auto result = add<Format, Encoding, Rounding, Exceptions, Platform>(ua, ub);
-    return { pack<Format, Encoding>(result), get_flags() };
+    auto ua = unpack<Number, Layout>(a);
+    auto ub = unpack<Number, Layout>(b);
+    auto result = add<Number, Layout, Rounding, Exceptions, Platform>(ua, ub);
+    return { pack<Number, Layout>(result), get_flags() };
 };
 
 // Oracle
 auto oracle_add_fn = [](uint64_t a, uint64_t b) -> TestOutput {
-    auto r = oracle_add<Format, Encoding, Rounding>(a, b);
+    auto r = oracle_add<Number, Layout, Rounding>(a, b);
     return { r.bits, r.flags };
 };
 
@@ -523,11 +523,11 @@ struct BitExactIgnoreFlags {
 // represent the same real number. Used for cross-encoding
 // consistency tests. Requires decoding both bit patterns to a
 // common representation (e.g., MPFR) and comparing values.
-template <typename EncodingA, typename EncodingB>
+template <typename NumberA, typename NumberB>
 struct SameRealValue {
     bool compare(TestOutput a, TestOutput b) {
-        auto va = decode_to_mpfr<EncodingA>(a.bits);
-        auto vb = decode_to_mpfr<EncodingB>(b.bits);
+        auto va = decode_to_mpfr<NumberA>(a.bits);
+        auto vb = decode_to_mpfr<NumberB>(b.bits);
         return mpfr_equal_p(va, vb);
     }
 };
@@ -877,7 +877,7 @@ verifying that SWAR results match scalar results for all inputs
 
 ## TDD Sequence for the Rewrite
 
-The rewrite from the current policy structure to the five-axis
+The rewrite from the current policy structure to the six-axis
 architecture is driven by tests. Each step has a clear pass/fail
 criterion. Steps are ordered by dependency: later steps depend on
 earlier steps being complete and passing.
@@ -902,7 +902,7 @@ validates that the bit-pattern-to-MPFR decoding is correct.
 ### Step 2: Oracle Part 2 — Policy Application Layer
 
 Write the policy application layer. This takes an exact MPFR result
-and applies Format, Encoding, and Rounding policies to produce a bit
+and applies Number, Layout, and Rounding policies to produce a bit
 pattern and exception flags.
 
 Deliverable: `tests/oracle/policy_apply.hpp`
@@ -928,10 +928,10 @@ exhaustively for FP8. For E4M3FNUZ, exactly one bit pattern is NaN
 FP8). Cross-encoding consistency holds for all FP8 values representable
 in both IEEE754 and each non-IEEE encoding.
 
-### Step 4: Format + Encoding + Pack/Unpack
+### Step 4: Number + Layout + Pack/Unpack
 
-Implement the new five-axis types: `Format` (geometry only), `Encoding`
-(what bit patterns mean), and `pack`/`unpack` parameterized on both.
+Implement the new six-axis types: `Number` (what one value is), `Layout`
+(how it maps to storage), and `pack`/`unpack` parameterized on both.
 Tests are written before implementation.
 
 Deliverable: New `format.hpp`, `encoding.hpp`, `pack_unpack.hpp`.

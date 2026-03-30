@@ -255,30 +255,5 @@ that takes real values from the historical record:
 
 Or "none" for fixed-point and integer formats.
 
-### Sketch of reconsidered axes
-
-The five-axis count appears to remain correct. The axes should be:
-
-1. **Container** (currently Format): Total storage size, digit width
-   (1, 4, 8), byte ordering. Pure physical structure. No field names,
-   no semantic labels.
-
-2. **Interpretation** (currently Encoding): Radix, exponent base,
-   scaling model (fixed exponent / regime / fixed-point / integer),
-   sign method (explicit / radix complement / diminished radix
-   complement / inherent / unsigned), field decomposition (which cells
-   are sign, exponent, significand — compile-time for fixed formats,
-   runtime for posits), has_implicit_digit, exponent_bias, special
-   values (NaN, Inf, negative zero, denormals).
-
-3. **Rounding**: Unchanged in concept, but needs to accommodate
-   decimal rounding and value-dependent rounding precision (posits).
-
-4. **Exceptions**: Unchanged.
-
-5. **Platform**: Unchanged in concept, extended with BCD hardware
-   capability flags.
-
-These are sketches, not specifications. The right decomposition should
-emerge from thorough analysis of the problems above, not be designed
-in advance.
+See `design.md` for the six-axis architecture that addresses these
+problems.

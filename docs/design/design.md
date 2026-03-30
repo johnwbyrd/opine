@@ -19,7 +19,7 @@ See `catalog.md` for the Number decomposition of every known format.
 
 ## Core Insight
 
-Three structural concerns, not two.
+Three structural concerns.
 
 **Number** — what one numeric value is.  Pure semantics.  A
 floating-point value is a composite Number: it contains a significand
@@ -222,10 +222,10 @@ interaction (matrix multiply), defined by the operation, not by Box.
 
 ### Axis 3: Layout
 
-How one Number maps to bits.  Period.
+How one Number maps to storage.
 
-Layout is bit-level geometry for a single value.  It pairs with
-Number at the element level only.
+Layout is geometry for a single value.  It pairs with Number at
+the element level only.
 
 A **primitive Layout** maps a primitive Number's digits to physical
 positions:
@@ -241,11 +241,27 @@ A **composite Layout** maps a composite Number's sub-Numbers to
 sub-regions:
 
 ```
-total_bits:         int
+total_size:         int | Variable
+storage_type:       uint_t<N> | span<char> | string_view | ...
 sub_layouts:        { name → Layout }
 packing:            Direct | DPD | BID | ImplicitDigit | ...
 field_boundaries:   Fixed | Dynamic(parsing_rule)
 ```
+
+`total_size` is a compile-time constant for fixed-width formats
+(32 bits for IEEE binary32, 24 bits for COMP-3 PIC S9(5)) and
+Variable for string and other variable-length formats.  When
+total_size is compile-time, the compiler eliminates all
+variable-width code paths via `if constexpr`.  When total_size is
+Variable, the runtime cost of scanning and parsing is inherent —
+no design can avoid it.  Fixed-width formats pay nothing for the
+existence of variable-width formats in the same type system.
+
+`storage_type` is what pack/unpack reads from and writes to.
+Fixed-width Layouts use `uint_t<N>` (a compile-time-sized integer).
+Variable-width Layouts use a character sequence type
+(`span<char>`, `string_view`, or similar).  This is a template
+parameter on Layout.
 
 `packing` handles storage codecs.  DPD (3 decimal digits in 10
 bits) is a Layout concern — the Number is "10 decimal digits"; the
@@ -255,16 +271,33 @@ also a Layout concern — the Number has 24 digits, the Layout stores
 is "16 decimal digits" (radix=10), the Layout packs them as a
 single binary integer.  Unpack converts binary to decimal.
 
-`field_boundaries` is Fixed for most formats and Dynamic for posits,
-tapered FP, and Type I Unums.  A dynamic layout includes a parsing
-rule (regime scan for posits, size-field extraction for Type I
-Unums).
+`field_boundaries` is Fixed for most formats and Dynamic for
+formats whose fields are not at compile-time-known positions.
+Dynamic layouts include a parsing rule:
+
+- **Regime scan** (posits): unary run of identical bits determines
+  exponent/fraction boundary.
+- **Size-field extraction** (Type I Unums): binary fields in the
+  word specify the widths.
+- **Delimiter scan** (strings): character-by-character scan for
+  sign, decimal point, exponent indicator, and digits.  The
+  delimiter characters (`.`, `e`/`E`, `+`/`-`) and the character
+  encoding (ASCII, EBCDIC) are Layout parameters.
+
+These are points on a complexity spectrum, not different categories.
+IEEE is mask-and-shift; DPD is a lookup table; posits scan bits;
+strings scan characters.  All implement the same pack/unpack
+interface.
 
 **Layout principle**: Layout is pure geometry for one value.  If
 you're labeling something with semantic meaning ("this is the
 exponent"), that's Number's job.  If you're describing how a
 collection of values is arranged in memory, that's Box's job.
-Layout says where one Number's cells go in bits.
+Layout says where one Number's parts are in storage.
+
+A Variable-width Layout cannot fill a SWAR-packed Box or a
+fixed-stride SIMD Box.  This constraint is enforced at compile time
+by Box, not by Layout.  Layout does not know or care about Box.
 
 #### Independence of Number and Layout
 
@@ -528,29 +561,10 @@ Those will be designed once the type framework is in place.
 
 **Known representational gaps:**
 
-*Layout gaps:*
-- Zoned decimal embedded sign — the last byte's zone nibble serves
-  double duty as both sign and digit.  Not a clean dedicated field.
-- DPD combination field — 5 bits simultaneously encode exponent MSBs
-  and the leading significand digit.  Multi-purpose bits.
-- String delimiters — decimal point (.) and exponent indicator (e/E)
-  are structural markers that are neither digits, sign, nor exponent.
 - BRLESC tag fields — a 3-bit type discriminant selects which Number
-  interpretation applies.  Union/tagged-union concept.
-
-*Number gaps:*
-- HP exponent thousand's complement — radix complement sign on the
-  exponent is expressible (RadixComplement, radix=10), but the
-  current Biased() is the only exponent sign option shown in most
-  catalog entries.  Needs explicit support for non-biased exponent
-  sign methods.
-- Negative radix arithmetic — negabinary (base -2) is in the type
-  system, but no arithmetic pipeline exists for negative radix.
-
-*Structural gaps:*
-- Variable-length storage — strings and Burroughs Medium Systems (up
-  to 100 digits) have no fixed total size.
-- Multiple dynamic-field mechanisms — posit regime scan, Type I Unum
-  size fields, and tapered FP length prefix are three different
-  solutions to dynamic field allocation.  The design acknowledges
-  all three but a unified treatment is aspirational.
+  interpretation applies to the same word.  This is a tagged union:
+  one Layout, multiple possible Numbers selected at runtime.  Outside
+  the current model.
+- Negative radix arithmetic — negabinary (base -2) is expressible in
+  the type system, but no arithmetic pipeline exists for negative
+  radix.
