@@ -378,14 +378,14 @@ and error handling. It does **not** compose freely with special-value
 handling — the two's complement representation determines the
 special-value encoding.
 
-| Dimension       | Controls                                      | Interaction with representation |
+| Axis            | Controls                                      | Interaction with representation |
 |-----------------|-----------------------------------------------|---------------------------------|
-| Format          | Bit widths and positions of fields             | None — fields are the same |
-| Rounding        | How mantissa is rounded during pack            | None — operates on unpacked values |
-| Denormal        | Whether denormals exist and how they're handled| None — denormal detection operates on unpacked fields |
-| Special values  | NaN, Inf, signed zero encoding and behavior    | **Coupled** — TC determines encoding |
-| Error handling  | How errors are reported                        | Minor — single NaN requires status mechanism |
-| Type selection  | Integer types used for storage                 | None |
+| Number          | Radix, digit width, sign method, composition   | **Coupled** — sign_method is RadixComplement; determines special values |
+| Box             | Multiplicity and memory arrangement            | None |
+| Layout          | Bit widths and positions of fields             | None — fields are the same |
+| Rounding        | How significand is rounded during pack         | None — operates on unpacked values |
+| Exceptions      | How errors are reported                        | Minor — single NaN requires status mechanism |
+| Platform        | Hardware identity and capabilities             | None |
 
 ### The coupling between representation and special values
 
