@@ -89,6 +89,19 @@ list(TRANSFORM _SF_ARCH_EXCLUDE
 list(TRANSFORM _SF_ARCH_EXCLUDE APPEND ".c")
 list(REMOVE_ITEM SF_ARCH_SOURCES ${_SF_ARCH_EXCLUDE})
 
+# The fork's bfloat16 support only exists in the 8086-SSE
+# specialization; other specializations lack the bf16 NaN handlers
+# the bf16 sources call. Drop bf16 from the build there.
+if(NOT EXISTS "${SF_SOURCE_DIR}/${SOFTFLOAT_SPECIALIZE}/s_bf16UIToCommonNaN.c")
+    file(GLOB _SF_BF16_SOURCES
+         "${SF_SOURCE_DIR}/*bf16*.c" "${SF_SOURCE_DIR}/*BF16*.c")
+    if(_SF_BF16_SOURCES)
+        list(REMOVE_ITEM SF_COMMON_SOURCES ${_SF_BF16_SOURCES})
+    endif()
+    message(STATUS "SoftFloat: ${SOFTFLOAT_SPECIALIZE} has no bfloat16 "
+                   "specialization; bf16 sources excluded")
+endif()
+
 # The source directory contains internal helpers for both the FAST_INT64 and
 # multi-word builds. These are mutually exclusive — exclude the wrong set.
 if(SOFTFLOAT_FAST_INT64)

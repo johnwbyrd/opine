@@ -26,19 +26,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # apt-get update is allowed to fail: runners ship third-party
+          # repos (packages.microsoft.com) whose transient signature
+          # breakage would otherwise kill the job. If the lists are
+          # truly unusable, the install step still fails loudly.
           - name: ubuntu-clang-18
             os: ubuntu-latest
             cc: clang-18
             cxx: clang++-18
             setup: >-
-              sudo apt-get update &&
+              sudo apt-get update || true;
               sudo apt-get install -y clang-18 libmpfr-dev libgmp-dev ninja-build
           - name: ubuntu-gcc-13
             os: ubuntu-latest
             cc: gcc-13
             cxx: g++-13
             setup: >-
-              sudo apt-get update &&
+              sudo apt-get update || true;
               sudo apt-get install -y g++-13 libmpfr-dev libgmp-dev ninja-build
           - name: macos-clang
             os: macos-latest
