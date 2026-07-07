@@ -11,6 +11,7 @@
 // Specialized for float16, float32, float64, extFloat80, float128.
 // Note: extFloat80 has no mulAdd in SoftFloat.
 
+#include <bit>
 #include <cstdint>
 
 #include "harness/ops.hpp"
@@ -206,8 +207,55 @@ template <> struct SoftFloatAdapter<opine::extFloat80> {
     return (BitsType(S.signExp) << 64) | BitsType(S.signif);
   }
 
+  // The pinned SoftFloat fork patches the extF80 arithmetic paths to
+  // handle non-canonical encodings (see tests/softfloat/issues/), but
+  // the comparison functions (extF80_eq / lt / le) still compare raw
+  // fields, so an unnormal-zero compares unequal to +0 and a
+  // pseudo-infinity compares unequal to canonical Inf. Comparisons
+  // depend only on mathematical value, so rewrite each operand as its
+  // canonical equal-valued encoding before comparing: unnormals
+  // renormalize (or become subnormals), unnormal-zeros become true
+  // zeros, pseudo-denormals become exp=1 normals, pseudo-infinities
+  // become canonical infinities. Pseudo-NaNs stay as-is — the NaN
+  // check inside the comparison functions already treats them as NaN.
+  static BitsType canonicalizeForCompare(BitsType V) {
+    uint64_t Sig = static_cast<uint64_t>(V);
+    unsigned SignExp = static_cast<unsigned>(static_cast<uint16_t>(V >> 64));
+    unsigned Exp = SignExp & 0x7FFFU;
+    const bool JBit = (Sig >> 63) != 0;
+
+    if (Exp == 0x7FFFU) {
+      if (!JBit && Sig == 0) // pseudo-infinity
+        Sig = UINT64_C(0x8000000000000000);
+    } else if (Exp == 0) {
+      if (JBit) // pseudo-denormal: same value as the exp=1 normal
+        Exp = 1;
+    } else if (!JBit) { // unnormal
+      if (Sig == 0) {
+        Exp = 0;
+      } else {
+        const unsigned Shift = unsigned(std::countl_zero(Sig));
+        if (Exp > Shift) {
+          Exp -= Shift;
+          Sig <<= Shift;
+        } else {
+          // Value lands in the subnormal range; exp=0 and exp=1 share
+          // the same weight, so shift by exp-1 and clear the exponent.
+          Sig <<= (Exp - 1);
+          Exp = 0;
+        }
+      }
+    }
+    SignExp = (SignExp & 0x8000U) | Exp;
+    return (BitsType(SignExp) << 64) | BitsType(Sig);
+  }
+
   TestOutput<BitsType> dispatch(Op O, BitsType A, BitsType B) const {
     softfloat_exceptionFlags = 0;
+    if (O == Op::Eq || O == Op::Lt || O == Op::Le) {
+      A = canonicalizeForCompare(A);
+      B = canonicalizeForCompare(B);
+    }
     extFloat80_t Sa = toSF(A), Sb = toSF(B);
     switch (O) {
     case Op::Add: return {fromSF(extF80_add(Sa, Sb)), 0};
