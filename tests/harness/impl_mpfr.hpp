@@ -271,6 +271,16 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   if constexpr (Fmt::implicit_digit) {
     if (MagExp == 0) {
+      // Denormal (implicit-bit format). If the Number flushes input
+      // denormals, replace with signed zero.
+      if constexpr (Enc::denormal_mode == DenormalMode::FlushInputs ||
+                    Enc::denormal_mode == DenormalMode::FlushBoth) {
+        mpfr_set_zero(Result, (IsNegative && Enc::negative_zero ==
+                                                  NegativeZero::Exists)
+                                  ? -1
+                                  : +1);
+        return Result;
+      }
       Exponent = 1 - Bias - Fmt::sig_bits;
       Mantissa = MagMant;
     } else {
@@ -349,153 +359,235 @@ inline MpfrFloat mpfrExactTernaryOp(Op Operation, const MpfrFloat &A,
 }
 
 // ===================================================================
-// mpfrRoundToFormat — Round MPFR value to any IEEE 754-style format
+// mpfrRoundToFormat — Round an MPFR value to a Number+Layout bit pattern
 // ===================================================================
+//
+// This is the "round" and "pack" steps of the design's operation
+// pipeline (unpack → compute → round → pack). The MPFR value is
+// assumed to carry the exact result of some Compute step at
+// arbitrary precision; this function reduces it to the target
+// format's storage bits.
+//
+// Structure:
+//
+//   1. Compile-time constants come out of Number and Layout.
+//   2. Two bit-level helpers (MaskWidth, ApplySign) hide the
+//      value_sign encoding.
+//   3. Three category-emitters (EmitNan, EmitInfOrSaturate,
+//      EmitZero) produce the bit pattern for a given category.
+//      They're called from both the dispatch head and the
+//      overflow / underflow paths of the finite branch.
+//   4. RoundToInteger is the shared rounding kernel: |Val| scaled
+//      by 2^shift, round-to-nearest, read out as an integer.
+//   5. The main pipeline dispatches on category, then rounds the
+//      finite case in either the normal or subnormal range,
+//      applies output-denormal flush, checks the IntegerExtremes
+//      overflow-into-Inf collision, and applies value_sign.
 
 template <typename FloatType>
 typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   using Fmt = typename FloatType::layout;
-  using Enc = typename FloatType::number;
+  using Num = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
+
+  // -- Compile-time constants derived from Number and Layout -----
+  constexpr int TotalBits = Fmt::total_bits;
   constexpr int MantBits = Fmt::sig_bits;
   constexpr int ExpBits = Fmt::exp_bits;
-  constexpr int Bias = FloatType::number::exponent_bias;
+  constexpr int Bias = Num::exponent_bias;
   constexpr BitsType ExpAllOnes = (BitsType{1} << ExpBits) - 1;
   constexpr BitsType MantMask = (BitsType{1} << MantBits) - 1;
+  constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
+  // The largest biased exponent finite values may use. When either
+  // NaN or Inf sits at ReservedExponent, one exponent value is
+  // reserved and finites cap at ExpAllOnes - 1.
   constexpr int MaxBiasedExp = [] {
-    if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent ||
-                  Enc::inf_encoding == InfEncoding::ReservedExponent)
+    if constexpr (Num::nan_encoding == NanEncoding::ReservedExponent ||
+                  Num::inf_encoding == InfEncoding::ReservedExponent)
       return (1 << ExpBits) - 2;
     else
       return (1 << ExpBits) - 1;
   }();
 
+  // Precision of the rounded integer significand. For implicit-digit
+  // formats the semantic significand is MantBits + 1, and the
+  // rounded integer ranges over [2^RoundingMantBits, 2^(RoundingMantBits+1))
+  // for normals — so RoundingMantBits == MantBits. For explicit-J-bit
+  // formats the leading digit is stored, so RoundingMantBits == MantBits - 1.
   constexpr int RoundingMantBits =
       Fmt::implicit_digit ? MantBits : (MantBits - 1);
 
   constexpr int EminIeee = 1 - Bias;
 
-  // --- Special values ---
+  // -- Bit-level helpers -----------------------------------------
 
-  if (Val.isNan()) {
-    if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-      if constexpr (Fmt::implicit_digit) {
-        return (ExpAllOnes << Fmt::exp_offset) |
+  // Mask a computed value to the storage word's actual width.
+  // Necessary when storage_type is wider than the format (e.g., a
+  // 12-bit padded format stored in uint16_t).
+  auto MaskWidth = [](BitsType b) -> BitsType {
+    if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+      constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
+      return b & Mask;
+    }
+    return b;
+  };
+
+  // Apply the Number's value_sign to a positive-magnitude bit
+  // pattern. Explicit sets the sign bit; RadixComplement negates
+  // the whole word (two's complement); DiminishedRadixComplement
+  // one's-complements it (CDC 6600).
+  auto ApplySign = [&](BitsType positive, bool negative) -> BitsType {
+    if (!negative)
+      return positive;
+    if constexpr (Num::value_sign == SignMethod::Explicit)
+      return positive | SignBit;
+    else if constexpr (Num::value_sign == SignMethod::RadixComplement)
+      return MaskWidth((~positive) + BitsType{1});
+    else if constexpr (Num::value_sign ==
+                       SignMethod::DiminishedRadixComplement)
+      return MaskWidth(~positive);
+    return positive;
+  };
+
+  // -- Category-specific bit-pattern producers -------------------
+
+  // Canonical NaN bit pattern for the Number's nan_encoding.
+  // ReservedExponent → all-ones exponent + MSB of stored sig (qNaN).
+  // TrapValue → 0x80…0. NegativeZeroBitPattern → SignBit.
+  // None → +0 as a best effort (upstream must not produce NaN in
+  // formats that can't represent it).
+  auto EmitNan = [&]() -> BitsType {
+    if constexpr (Num::nan_encoding == NanEncoding::ReservedExponent) {
+      if constexpr (Fmt::implicit_digit)
+        return (BitsType(ExpAllOnes) << Fmt::exp_offset) |
                (BitsType{1} << (MantBits - 1));
-      } else {
-        constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
-        constexpr BitsType QuietBit = BitsType{1} << (MantBits - 2);
-        return (ExpAllOnes << Fmt::exp_offset) | JBit | QuietBit;
-      }
+      constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
+      constexpr BitsType QBit = BitsType{1} << (MantBits - 2);
+      return (BitsType(ExpAllOnes) << Fmt::exp_offset) | JBit | QBit;
+    } else if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
+      return BitsType{1} << (TotalBits - 1);
+    } else if constexpr (Num::nan_encoding ==
+                         NanEncoding::NegativeZeroBitPattern) {
+      return SignBit;
     }
     return BitsType{0};
-  }
+  };
 
-  if (Val.isInf()) {
-    if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-      BitsType InfBits;
-      if constexpr (Fmt::implicit_digit) {
-        InfBits = ExpAllOnes << Fmt::exp_offset;
-      } else {
-        constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
-        InfBits = (ExpAllOnes << Fmt::exp_offset) | JBit;
-      }
-      if (Val.isNegative())
-        InfBits |= BitsType{1} << Fmt::sign_offset;
-      return InfBits;
+  // Positive-magnitude +Inf. For None, this returns the max-finite
+  // bit pattern instead — inf_encoding=None means overflow
+  // saturates rather than emitting Inf.
+  auto PosInfBits = [&]() -> BitsType {
+    if constexpr (Num::inf_encoding == InfEncoding::ReservedExponent) {
+      if constexpr (Fmt::implicit_digit)
+        return BitsType(ExpAllOnes) << Fmt::exp_offset;
+      constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
+      return (BitsType(ExpAllOnes) << Fmt::exp_offset) | JBit;
+    } else if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+      return (BitsType{1} << (TotalBits - 1)) - 1;
+    } else {
+      // None: saturate. Under this branch MaxBiasedExp is
+      // ExpAllOnes (no NaN or Inf uses ReservedExponent).
+      return (BitsType(MaxBiasedExp) << Fmt::exp_offset) |
+             (MantMask << Fmt::sig_offset);
+    }
+  };
+
+  auto EmitInfOrSaturate = [&](bool negative) -> BitsType {
+    return ApplySign(PosInfBits(), negative);
+  };
+
+  // Signed zero. -0 exists only when the Number opts in; for those
+  // formats the encoding is Explicit → SignBit, DRC → all-ones word
+  // (CDC 6600). RadixComplement + Exists is excluded structurally.
+  auto EmitZero = [&](bool negative) -> BitsType {
+    if (negative && Num::negative_zero == NegativeZero::Exists) {
+      if constexpr (Num::value_sign == SignMethod::Explicit)
+        return SignBit;
+      if constexpr (Num::value_sign == SignMethod::DiminishedRadixComplement)
+        return MaskWidth(~BitsType{0});
     }
     return BitsType{0};
-  }
+  };
 
-  if (Val.isZero()) {
-    BitsType ZeroBits = 0;
-    if (Val.isNegative() && Enc::negative_zero == NegativeZero::Exists)
-      ZeroBits |= BitsType{1} << Fmt::sign_offset;
-    return ZeroBits;
-  }
+  // -- Rounding kernel -------------------------------------------
 
-  // --- Finite: round by scaling to integer mantissa + mpfr_rint ---
-
-  bool Negative = mpfr_signbit(Val) != 0;
-  mpfr_exp_t MpfrExp = mpfr_get_exp(Val);
-  int IeeeExp = static_cast<int>(MpfrExp) - 1;
-
-  MpfrFloat Scaled;
-  mpfr_abs(Scaled, Val, MPFR_RNDN);
-
-  BitsType StoredExp;
-  BitsType StoredMant;
-
-  if (IeeeExp >= EminIeee) {
-    // Normal range
-    mpfr_mul_2si(Scaled, Scaled, RoundingMantBits - IeeeExp, MPFR_RNDN);
+  // Multiply |Val| by 2^shift, round to nearest integer, return it
+  // as an unsigned bitfield. Callers pick shift to place the
+  // rounded integer at the desired precision.
+  auto RoundToInteger = [&](int shift) -> BitsType {
+    MpfrFloat Scaled;
+    mpfr_abs(Scaled, Val, MPFR_RNDN);
+    mpfr_mul_2si(Scaled, Scaled, shift, MPFR_RNDN);
     mpfr_rint(Scaled, Scaled, MPFR_RNDN);
-
     mpz_t Z;
     mpz_init(Z);
     mpfr_get_z(Z, Scaled, MPFR_RNDN);
-    BitsType IntSig = detail::mpzToBits<BitsType>(Z);
+    BitsType r = detail::mpzToBits<BitsType>(Z);
     mpz_clear(Z);
+    return r;
+  };
 
+  // -- Category dispatch -----------------------------------------
+
+  if (Val.isNan())
+    return EmitNan();
+  if (Val.isInf())
+    return EmitInfOrSaturate(Val.isNegative());
+  if (Val.isZero())
+    return EmitZero(Val.isNegative());
+
+  // -- Finite: round abs(Val), then reassemble the fields --------
+
+  const bool Negative = mpfr_signbit(Val) != 0;
+  const int IeeeExp = int(mpfr_get_exp(Val)) - 1;
+
+  BitsType StoredExp{};
+  BitsType StoredMant{};
+  bool UnderflowedToZero = false;
+
+  if (IeeeExp >= EminIeee) {
+    // Normal range. Scale so the rounded integer significand lands
+    // in [2^RoundingMantBits, 2^(RoundingMantBits+1)).
+    BitsType IntSig = RoundToInteger(RoundingMantBits - IeeeExp);
+
+    // Round-up-into-next-binade (e.g. 1.111… → 10.0).
+    int ExpAdj = IeeeExp;
     if (IntSig >= (BitsType{1} << (RoundingMantBits + 1))) {
-      IeeeExp++;
+      ExpAdj++;
       IntSig >>= 1;
     }
 
-    int BiasedExp = IeeeExp + Bias;
-    if (BiasedExp > MaxBiasedExp) {
-      if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-        BitsType InfBits;
-        if constexpr (Fmt::implicit_digit) {
-          InfBits = ExpAllOnes << Fmt::exp_offset;
-        } else {
-          constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
-          InfBits = (ExpAllOnes << Fmt::exp_offset) | JBit;
-        }
-        if (Negative)
-          InfBits |= BitsType{1} << Fmt::sign_offset;
-        return InfBits;
-      }
-      return BitsType{0};
-    }
+    const int BiasedExp = ExpAdj + Bias;
+    if (BiasedExp > MaxBiasedExp)
+      return EmitInfOrSaturate(Negative);
 
-    StoredExp = static_cast<BitsType>(BiasedExp);
+    StoredExp = BitsType(BiasedExp);
     StoredMant = IntSig & MantMask;
-
   } else {
-    // Subnormal range
-    mpfr_mul_2si(Scaled, Scaled, Bias - 1 + RoundingMantBits, MPFR_RNDN);
-    mpfr_rint(Scaled, Scaled, MPFR_RNDN);
-
-    mpz_t Z;
-    mpz_init(Z);
-    mpfr_get_z(Z, Scaled, MPFR_RNDN);
-    BitsType Mant = detail::mpzToBits<BitsType>(Z);
-    mpz_clear(Z);
+    // Subnormal range. Scale so the rounded integer is the
+    // subnormal mantissa (implicit-digit) or the full stored
+    // significand (explicit-J-bit).
+    BitsType Mant = RoundToInteger(Bias - 1 + RoundingMantBits);
 
     if constexpr (Fmt::implicit_digit) {
       if (Mant >= (BitsType{1} << MantBits)) {
+        // Rounded up into the smallest normal.
         StoredExp = 1;
         StoredMant = 0;
       } else if (Mant == 0) {
-        BitsType ZeroBits = 0;
-        if (Negative && Enc::negative_zero == NegativeZero::Exists)
-          ZeroBits |= BitsType{1} << Fmt::sign_offset;
-        return ZeroBits;
+        UnderflowedToZero = true;
       } else {
         StoredExp = 0;
         StoredMant = Mant;
       }
     } else {
+      // Explicit-J-bit: smallest normal has J-bit set, fraction 0.
       if (Mant >= (BitsType{1} << (MantBits - 1))) {
         StoredExp = 1;
         StoredMant = BitsType{1} << (MantBits - 1);
       } else if (Mant == 0) {
-        BitsType ZeroBits = 0;
-        if (Negative && Enc::negative_zero == NegativeZero::Exists)
-          ZeroBits |= BitsType{1} << Fmt::sign_offset;
-        return ZeroBits;
+        UnderflowedToZero = true;
       } else {
         StoredExp = 0;
         StoredMant = Mant;
@@ -503,13 +595,35 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     }
   }
 
-  BitsType Result = 0;
-  if (Negative)
-    Result |= BitsType{1} << Fmt::sign_offset;
-  Result |= StoredExp << Fmt::exp_offset;
-  Result |= StoredMant << Fmt::sig_offset;
+  // -- Output-denormal flush -------------------------------------
+  // FlushToZero and FlushBoth collapse any subnormal *result* to
+  // zero, even if it wasn't the initial underflow-to-zero case.
+  if constexpr (Num::denormal_mode == DenormalMode::FlushToZero ||
+                Num::denormal_mode == DenormalMode::FlushBoth) {
+    if (!UnderflowedToZero && Fmt::implicit_digit && StoredExp == 0 &&
+        StoredMant != 0) {
+      UnderflowedToZero = true;
+    }
+  }
 
-  return Result;
+  if (UnderflowedToZero)
+    return EmitZero(Negative);
+
+  // -- Assemble positive-magnitude form and apply value_sign -----
+
+  BitsType Positive =
+      (StoredExp << Fmt::exp_offset) | (StoredMant << Fmt::sig_offset);
+
+  // IntegerExtremes overflow collision: if the rounded (exp, sig)
+  // fields, laid out in positive-magnitude form, reach the +Inf
+  // bit pattern (0x7F…F), the "finite" result actually overflows.
+  if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+    constexpr BitsType PosInf = (BitsType{1} << (TotalBits - 1)) - 1;
+    if (Positive >= PosInf)
+      return EmitInfOrSaturate(Negative);
+  }
+
+  return ApplySign(Positive, Negative);
 }
 
 // ===================================================================
@@ -540,13 +654,68 @@ template <typename FloatType> struct MpfrAdapter {
 
   TestOutput<BitsType> dispatchUnary(Op O, BitsType A) const {
     using Fmt = typename FloatType::layout;
-    // Neg and Abs are non-computational sign-bit operations per IEEE 754.
-    // They must not decode/reencode (which would normalize unnormals).
+    using Num = typename FloatType::number;
+    // Neg and Abs are non-computational per IEEE 754: they must not
+    // decode/reencode (which would normalize unnormals) and must
+    // preserve NaN. The mechanics depend on value_sign:
+    //   Explicit  → toggle / clear the sign bit
+    //   RadixComplement → two's complement of the whole word
+    //   DiminishedRadixComplement → one's complement of the whole word
+    // NaN encoded at a specific bit pattern (TrapValue for rbj,
+    // NegativeZeroBitPattern for E4M3FNUZ) must be short-circuited
+    // before the sign transform, or the transform would smear the
+    // NaN into a finite value.
+    constexpr int TotalBits = Fmt::total_bits;
     constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
-    switch (O) {
-    case Op::Neg: return {BitsType(A ^ SignBit), 0};
-    case Op::Abs: return {BitsType(A & ~SignBit), 0};
-    default: break;
+
+    auto MaskWidth = [](BitsType b) -> BitsType {
+      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
+        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
+        return b & Mask;
+      }
+      return b;
+    };
+
+    auto IsNanBitPattern = [&](BitsType b) -> bool {
+      if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
+        constexpr BitsType Trap = BitsType{1} << (TotalBits - 1);
+        return b == Trap;
+      } else if constexpr (Num::nan_encoding ==
+                           NanEncoding::NegativeZeroBitPattern) {
+        return b == SignBit;
+      }
+      // ReservedExponent NaN survives sign transformations.
+      return false;
+    };
+
+    if (O == Op::Neg) {
+      if (IsNanBitPattern(A))
+        return {A, 0};
+      if constexpr (Num::value_sign == SignMethod::Explicit)
+        return {BitsType(A ^ SignBit), 0};
+      else if constexpr (Num::value_sign == SignMethod::RadixComplement)
+        return {MaskWidth((~A) + BitsType{1}), 0};
+      else if constexpr (Num::value_sign ==
+                         SignMethod::DiminishedRadixComplement)
+        return {MaskWidth(~A), 0};
+      return {A, 0};
+    }
+    if (O == Op::Abs) {
+      if (IsNanBitPattern(A))
+        return {A, 0};
+      if constexpr (Num::value_sign == SignMethod::Explicit)
+        return {BitsType(A & ~SignBit), 0};
+      else if constexpr (Num::value_sign == SignMethod::RadixComplement) {
+        if (A & SignBit)
+          return {MaskWidth((~A) + BitsType{1}), 0};
+        return {A, 0};
+      } else if constexpr (Num::value_sign ==
+                           SignMethod::DiminishedRadixComplement) {
+        if (A & SignBit)
+          return {MaskWidth(~A), 0};
+        return {A, 0};
+      }
+      return {A, 0};
     }
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Exact = mpfrExactUnaryOp(O, Ma);
