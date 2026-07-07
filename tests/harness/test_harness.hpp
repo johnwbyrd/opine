@@ -14,10 +14,12 @@
 // This header includes only ops.hpp. It has no knowledge of MPFR,
 // SoftFloat, native FPU, or any other implementation.
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <random>
 #include <tuple>
+#include <vector>
 
 #include "harness/ops.hpp"
 #include "opine/opine.hpp"
@@ -361,6 +363,211 @@ template <typename... Strategies> struct Combined {
 template <typename... Strategies>
 Combined<Strategies...> combined(Strategies... S) {
   return {std::tuple{std::move(S)...}};
+}
+
+// ===================================================================
+// Structural values — derived from Number + Layout, not hand-coded
+// ===================================================================
+//
+// Returns every "structurally interesting" bit pattern for T,
+// derived algorithmically from T's Number and Layout parameters.
+// Every category the design docs identify as a testing hot-spot:
+// zero-boundary, min/max normal, min/max subnormal, ±Inf per
+// inf_encoding, NaN per nan_encoding, ULP neighbors of 1.0,
+// powers of 2 across the whole exponent range, machine epsilon.
+//
+// This is the replacement for the hand-coded interestingValues<T>()
+// array. Unlike that function, structuralValues respects the
+// Number's actual encoding — it emits +Inf at 0x7F…F for rbj, at
+// SignBit for NaN in E4M3FNUZ, etc. It also negates via the correct
+// value_sign (whole-word two's complement for RadixComplement).
+
+template <typename T>
+std::vector<typename T::storage_type> structuralValues() {
+  using Fmt = typename T::layout;
+  using Num = typename T::number;
+  using Storage = typename T::storage_type;
+
+  constexpr int E = Fmt::exp_bits;
+  constexpr int M = Fmt::sig_bits;
+  constexpr int Bias = Num::exponent_bias;
+  constexpr int TotalBits = Fmt::total_bits;
+  constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
+  constexpr Storage ExpMax = (Storage{1} << E) - 1;
+  constexpr Storage SigMask = (Storage{1} << M) - 1;
+  constexpr int MaxBiasedExp =
+      (Num::nan_encoding == NanEncoding::ReservedExponent ||
+       Num::inf_encoding == InfEncoding::ReservedExponent)
+          ? (int(ExpMax) - 1)
+          : int(ExpMax);
+
+  auto widthMask = []() -> Storage {
+    if constexpr (TotalBits < int(sizeof(Storage) * 8))
+      return (Storage{1} << TotalBits) - 1;
+    return Storage(~Storage{0});
+  };
+
+  // Encoding-correct negation: sign-bit set for Explicit, whole-word
+  // two's complement for RadixComplement, one's complement for DRC.
+  auto negate = [&](Storage x) -> Storage {
+    if constexpr (Num::value_sign == SignMethod::Explicit) {
+      return x | SignBit;
+    } else if constexpr (Num::value_sign == SignMethod::RadixComplement) {
+      return ((~x) + Storage{1}) & widthMask();
+    } else if constexpr (Num::value_sign ==
+                         SignMethod::DiminishedRadixComplement) {
+      return (~x) & widthMask();
+    }
+    return x;
+  };
+
+  std::vector<Storage> v;
+  auto add = [&](Storage x) { v.push_back(x); };
+  auto addPair = [&](Storage pos) {
+    v.push_back(pos);
+    if (pos != Storage{0})
+      v.push_back(negate(pos));
+  };
+
+  // ---- Zero(s) ----
+  add(Storage{0});
+  if constexpr (Num::negative_zero == NegativeZero::Exists)
+    add(negate(Storage{0}));
+
+  // ---- Infinity per inf_encoding ----
+  if constexpr (Num::inf_encoding == InfEncoding::ReservedExponent) {
+    Storage pos_inf = Storage(ExpMax) << Fmt::exp_offset;
+    if constexpr (!Fmt::implicit_digit)
+      pos_inf |= Storage{1} << (M - 1); // J-bit
+    addPair(pos_inf);
+  } else if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+    Storage pos_inf = (Storage{1} << (TotalBits - 1)) - Storage{1};
+    addPair(pos_inf);
+  }
+
+  // ---- NaN per nan_encoding ----
+  if constexpr (Num::nan_encoding == NanEncoding::ReservedExponent) {
+    Storage qnan_sig = Storage{1} << (M - 1);
+    if constexpr (!Fmt::implicit_digit)
+      qnan_sig |= Storage{1} << (M - 2); // Q bit for explicit-J
+    add((Storage(ExpMax) << Fmt::exp_offset) | qnan_sig); // qNaN
+    add((Storage(ExpMax) << Fmt::exp_offset) | Storage{1}); // sNaN
+    add(SignBit | ((Storage(ExpMax) << Fmt::exp_offset) | qnan_sig));
+  } else if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
+    add(Storage{1} << (TotalBits - 1));
+  } else if constexpr (Num::nan_encoding ==
+                       NanEncoding::NegativeZeroBitPattern) {
+    add(SignBit);
+  }
+
+  // ---- Subnormal boundaries (implicit-digit formats only) ----
+  if constexpr (Fmt::implicit_digit) {
+    addPair(Storage{1});       // min subnormal
+    addPair(SigMask);           // max subnormal
+    addPair(SigMask >> 1);      // mid subnormal (for coverage of the range)
+  }
+
+  // ---- Normal boundaries ----
+  Storage min_normal = Storage{1} << M;
+  addPair(min_normal);
+  addPair(min_normal + Storage{1}); // min normal + 1 ULP
+
+  Storage max_finite;
+  if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+    Storage pos_inf = (Storage{1} << (TotalBits - 1)) - Storage{1};
+    max_finite = pos_inf - Storage{1};
+  } else {
+    max_finite = (Storage(MaxBiasedExp) << Fmt::exp_offset) | SigMask;
+  }
+  addPair(max_finite);
+  addPair(max_finite - Storage{1}); // max finite - 1 ULP
+
+  // ---- Values around 1.0 ----
+  Storage one = Storage(Bias) << Fmt::exp_offset;
+  addPair(one);
+  addPair(one + Storage{1});
+  if (one > 0)
+    addPair(one - Storage{1});
+
+  // ---- 2.0 and 0.5 ----
+  if (Bias + 1 <= MaxBiasedExp)
+    addPair(Storage(Bias + 1) << Fmt::exp_offset);
+  if (Bias >= 1)
+    addPair(Storage(Bias - 1) << Fmt::exp_offset);
+
+  // ---- Sampled biased exponents (positive representative) ----
+  // Cross-products explode if we put every exponent in the
+  // structural set; ExponentStratifiedSingles handles the every-
+  // binade coverage. Here we just want a handful of landmark
+  // exponents so pairs land in different binades.
+  {
+    int step = MaxBiasedExp / 16;
+    if (step < 1) step = 1;
+    for (int e = 1; e <= MaxBiasedExp; e += step)
+      addPair(Storage(e) << Fmt::exp_offset);
+  }
+
+  // ---- Machine epsilon (2^(1-precision)) ----
+  int eps_exp = Bias - (Fmt::implicit_digit ? M : (M - 1));
+  if (eps_exp >= 1 && eps_exp <= MaxBiasedExp)
+    add(Storage(eps_exp) << Fmt::exp_offset);
+
+  // ---- Dedup ----
+  std::sort(v.begin(), v.end());
+  v.erase(std::unique(v.begin(), v.end()), v.end());
+
+  return v;
+}
+
+// ===================================================================
+// Iteration strategies (continued) — stratified + cross-product
+// ===================================================================
+
+// For each biased exponent value, sample K bit patterns with random
+// mantissa and random sign. Every binade gets touched regardless of
+// how wide the format is.
+template <typename T, int K> struct ExponentStratifiedSingles {
+  uint64_t Seed;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    using Fmt = typename T::layout;
+    using Storage = typename T::storage_type;
+    constexpr int E = Fmt::exp_bits;
+    constexpr int ExpCount = 1 << E;
+    constexpr Storage SigMask = (Storage{1} << Fmt::sig_bits) - 1;
+    constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
+
+    std::mt19937_64 Rng(Seed);
+    for (int e = 0; e < ExpCount; ++e) {
+      for (int k = 0; k < K; ++k) {
+        Storage sig = Storage(Rng()) & SigMask;
+        Storage sign = (Rng() & 1u) ? SignBit : Storage{0};
+        Callback(Storage(sign | (Storage(e) << Fmt::exp_offset) | sig));
+      }
+    }
+  }
+};
+
+// Cross-product of two single-value strategies: materialize each,
+// then emit every ordered pair. Used to combine structural × strat.
+template <typename T, typename A, typename B> struct CrossPairs {
+  A First;
+  B Second;
+
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    using Storage = typename T::storage_type;
+    std::vector<Storage> as, bs;
+    First([&](Storage x) { as.push_back(x); });
+    Second([&](Storage x) { bs.push_back(x); });
+    for (auto a : as)
+      for (auto b : bs)
+        Callback(a, b);
+  }
+};
+
+template <typename T, typename A, typename B>
+CrossPairs<T, A, B> crossPairs(A a, B b) {
+  return {std::move(a), std::move(b)};
 }
 
 // ===================================================================
