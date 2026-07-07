@@ -46,7 +46,9 @@ struct ToOdd {
   static constexpr int guard_bits = 1; // sticky: was anything lost?
 };
 
-using Default = TowardZero;
+// The IEEE 754 §4.3.3 default. Use TowardZero explicitly if a Type
+// wants truncation (e.g. FastType).
+using Default = ToNearestTiesToEven;
 
 static_assert(RoundingPolicy<TowardZero>);
 static_assert(RoundingPolicy<ToNearestTiesToEven>);

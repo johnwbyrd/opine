@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <type_traits>
 #include <utility>
 
 #include <gmp.h>
@@ -388,7 +389,19 @@ template <typename FloatType>
 typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   using Fmt = typename FloatType::layout;
   using Num = typename FloatType::number;
+  using Rnd = typename FloatType::rounding;
   using BitsType = typename FloatType::storage_type;
+
+  // The Rounding policies supported by the oracle so far. ToOdd
+  // and ToNearestTiesAway don't have direct MPFR analogs and are
+  // not yet needed; extending is a matter of custom post-rint
+  // adjustment.
+  static_assert(std::is_same_v<Rnd, rounding::TowardZero> ||
+                    std::is_same_v<Rnd, rounding::ToNearestTiesToEven> ||
+                    std::is_same_v<Rnd, rounding::TowardPositive> ||
+                    std::is_same_v<Rnd, rounding::TowardNegative>,
+                "mpfrRoundToFormat only supports TowardZero, "
+                "ToNearestTiesToEven, TowardPositive, TowardNegative");
 
   // -- Compile-time constants derived from Number and Layout -----
   constexpr int TotalBits = Fmt::total_bits;
@@ -512,14 +525,32 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   // -- Rounding kernel -------------------------------------------
 
-  // Multiply |Val| by 2^shift, round to nearest integer, return it
-  // as an unsigned bitfield. Callers pick shift to place the
-  // rounded integer at the desired precision.
-  auto RoundToInteger = [&](int shift) -> BitsType {
+  // Translate the Type's Rounding policy to an MPFR rounding-mode
+  // constant, applied to the abs value. Directed modes flip when
+  // the signed value is negative — rounding a negative value
+  // "toward +Inf" means rounding |value| toward zero, and vice
+  // versa. Round-to-nearest modes are sign-symmetric.
+  auto AbsRoundingMode = [](bool negative) -> mpfr_rnd_t {
+    if constexpr (std::is_same_v<Rnd, rounding::TowardZero>)
+      return MPFR_RNDZ;
+    else if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesToEven>)
+      return MPFR_RNDN;
+    else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>)
+      return negative ? MPFR_RNDZ : MPFR_RNDU;
+    else if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>)
+      return negative ? MPFR_RNDU : MPFR_RNDZ;
+    return MPFR_RNDN;
+  };
+
+  // Multiply |Val| by 2^shift, round to nearest integer with the
+  // given mode, return as an unsigned bitfield. Callers pick shift
+  // to place the rounded integer at the desired precision, and
+  // mode via AbsRoundingMode(sign_of_Val).
+  auto RoundToInteger = [&](int shift, mpfr_rnd_t mode) -> BitsType {
     MpfrFloat Scaled;
     mpfr_abs(Scaled, Val, MPFR_RNDN);
     mpfr_mul_2si(Scaled, Scaled, shift, MPFR_RNDN);
-    mpfr_rint(Scaled, Scaled, MPFR_RNDN);
+    mpfr_rint(Scaled, Scaled, mode);
     mpz_t Z;
     mpz_init(Z);
     mpfr_get_z(Z, Scaled, MPFR_RNDN);
@@ -541,6 +572,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   const bool Negative = mpfr_signbit(Val) != 0;
   const int IeeeExp = int(mpfr_get_exp(Val)) - 1;
+  const mpfr_rnd_t AbsRnd = AbsRoundingMode(Negative);
 
   BitsType StoredExp{};
   BitsType StoredMant{};
@@ -549,7 +581,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   if (IeeeExp >= EminIeee) {
     // Normal range. Scale so the rounded integer significand lands
     // in [2^RoundingMantBits, 2^(RoundingMantBits+1)).
-    BitsType IntSig = RoundToInteger(RoundingMantBits - IeeeExp);
+    BitsType IntSig = RoundToInteger(RoundingMantBits - IeeeExp, AbsRnd);
 
     // Round-up-into-next-binade (e.g. 1.111… → 10.0).
     int ExpAdj = IeeeExp;
@@ -568,7 +600,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     // Subnormal range. Scale so the rounded integer is the
     // subnormal mantissa (implicit-digit) or the full stored
     // significand (explicit-J-bit).
-    BitsType Mant = RoundToInteger(Bias - 1 + RoundingMantBits);
+    BitsType Mant = RoundToInteger(Bias - 1 + RoundingMantBits, AbsRnd);
 
     if constexpr (Fmt::implicit_digit) {
       if (Mant >= (BitsType{1} << MantBits)) {

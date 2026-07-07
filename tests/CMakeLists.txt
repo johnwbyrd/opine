@@ -30,6 +30,13 @@ if(OPINE_HAS_ORACLE)
     target_include_directories(test_oracle PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_oracle COMMAND test_oracle)
 
+    # Oracle rounding-mode dispatch (hand-worked expected results
+    # for four rounding modes on chosen tie / near-tie values)
+    add_executable(test_oracle_rounding oracle/test_oracle_rounding.cpp)
+    target_link_libraries(test_oracle_rounding PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_oracle_rounding PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_oracle_rounding COMMAND test_oracle_rounding)
+
     # Non-IEEE oracle validation (property tests + round-trip)
     add_executable(test_oracle_nonstd oracle/test_oracle_nonstd.cpp)
     target_link_libraries(test_oracle_nonstd PRIVATE opine MPFR::MPFR doctest_with_main)
