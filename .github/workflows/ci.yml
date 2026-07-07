@@ -1,0 +1,76 @@
+# Fast suite CI: build everything and run the full ctest suite
+# (exhaustive FP8 oracle cross-checks included) on every push.
+#
+# Platform notes:
+#   - MSVC is excluded: include/opine/core/bits.hpp requires Clang
+#     (_BitInt) or GCC (__int128).
+#   - MPFR/GMP dev packages are installed explicitly and
+#     OPINE_REQUIRE_ORACLE=ON makes configuration fail if they are
+#     not found, so the oracle tests can never be silently skipped.
+
+name: CI
+
+on:
+  push:
+    branches: [ main, 'claude/**' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-clang-18
+            os: ubuntu-latest
+            cc: clang-18
+            cxx: clang++-18
+            setup: >-
+              sudo apt-get update &&
+              sudo apt-get install -y clang-18 libmpfr-dev libgmp-dev ninja-build
+          - name: ubuntu-gcc-13
+            os: ubuntu-latest
+            cc: gcc-13
+            cxx: g++-13
+            setup: >-
+              sudo apt-get update &&
+              sudo apt-get install -y g++-13 libmpfr-dev libgmp-dev ninja-build
+          - name: macos-clang
+            os: macos-latest
+            cc: clang
+            cxx: clang++
+            setup: brew install mpfr gmp ninja
+
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install toolchain and dependencies
+        run: ${{ matrix.setup }}
+
+      - name: Point FindMPFR/FindGMP at Homebrew (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          echo "MPFR_DIR=$(brew --prefix mpfr)" >> "$GITHUB_ENV"
+          echo "GMP_DIR=$(brew --prefix gmp)" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: >-
+          cmake -B build -S . -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DOPINE_REQUIRE_ORACLE=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

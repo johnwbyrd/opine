@@ -19,7 +19,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(softfloat)
 include(testfloat)
 
-# MPFR + GMP: optional system packages
+# MPFR + GMP: optional system packages. CI sets OPINE_REQUIRE_ORACLE
+# so a runner with a missing MPFR fails loudly instead of silently
+# skipping the oracle tests.
+option(OPINE_REQUIRE_ORACLE "Fail configuration if MPFR is unavailable" OFF)
 find_package(MPFR QUIET)
 
 if(MPFR_FOUND)
@@ -27,6 +30,10 @@ if(MPFR_FOUND)
     message(STATUS "MPFR ${MPFR_VERSION} found: oracle tests enabled")
 else()
     set(OPINE_HAS_ORACLE FALSE)
+    if(OPINE_REQUIRE_ORACLE)
+        message(FATAL_ERROR "OPINE_REQUIRE_ORACLE=ON but MPFR was not found "
+                            "(install libmpfr-dev/libgmp-dev or set MPFR_DIR/GMP_DIR)")
+    endif()
     message(STATUS "MPFR not found: oracle tests disabled")
 endif()
 
