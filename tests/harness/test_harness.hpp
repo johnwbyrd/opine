@@ -217,6 +217,17 @@ TestResult testAgainstTernary(const char *Name, int HexWidth, IterFn Iter,
 // Iteration strategies
 // ===================================================================
 
+// Every ordered pair of TotalBits-wide patterns. Feasible for FP8
+// (65,536 pairs) and tolerable for FP16 (~4.3 × 10^9).
+template <typename BitsType, int TotalBits> struct ExhaustivePairs {
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    constexpr uint64_t Count = uint64_t{1} << TotalBits;
+    for (uint64_t I = 0; I < Count; ++I)
+      for (uint64_t J = 0; J < Count; ++J)
+        Callback(BitsType(I), BitsType(J));
+  }
+};
+
 // All pairs from a list of interesting values.
 template <typename BitsType> struct TargetedPairs {
   const BitsType *Values;
