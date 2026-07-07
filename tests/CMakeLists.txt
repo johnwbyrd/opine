@@ -7,6 +7,9 @@ endfunction()
 # Compile-time verification of the type system
 add_opine_test(test_types unit/test_types.cpp)
 
+# Exhaustive FP8 pack/unpack round-trip
+add_opine_test(test_pack_unpack unit/test_pack_unpack.cpp)
+
 # SoftFloat smoke test (always built)
 add_executable(test_softfloat_smoke softfloat/test_softfloat_smoke.cpp)
 target_link_libraries(test_softfloat_smoke PRIVATE softfloat)

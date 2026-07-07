@@ -37,7 +37,7 @@ static SoftFloatInit GlobalSoftFloatInit;
 template <typename FloatType, typename AdapterA, typename AdapterB>
 void verifyAgreement(const AdapterA &A, const AdapterB &B) {
   using BitsType = typename FloatType::storage_type;
-  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int TotalBits = FloatType::layout::total_bits;
   constexpr int HexWidth = (TotalBits + 3) / 4;
 
   constexpr auto Interesting = interestingValues<FloatType>();
@@ -79,7 +79,7 @@ void verifyAgreement(const AdapterA &A, const AdapterB &B) {
 template <typename FloatType, typename AdapterA, typename AdapterB>
 void verifyUnaryAgreement(const AdapterA &A, const AdapterB &B) {
   using BitsType = typename FloatType::storage_type;
-  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int TotalBits = FloatType::layout::total_bits;
   constexpr int HexWidth = (TotalBits + 3) / 4;
 
   constexpr auto Interesting = interestingValues<FloatType>();
@@ -108,7 +108,7 @@ void verifyUnaryAgreement(const AdapterA &A, const AdapterB &B) {
 template <typename FloatType, typename AdapterA, typename AdapterB>
 void verifyTernaryAgreement(const AdapterA &A, const AdapterB &B) {
   using BitsType = typename FloatType::storage_type;
-  constexpr int TotalBits = FloatType::format::total_bits;
+  constexpr int TotalBits = FloatType::layout::total_bits;
   constexpr int HexWidth = (TotalBits + 3) / 4;
 
   constexpr auto Interesting = interestingValues<FloatType>();
@@ -196,10 +196,10 @@ TEST_CASE_TEMPLATE("Native vs SoftFloat: ternary", T, float32, float64) {
 
 template <typename FloatType>
 MpfrFloat branchlessDecode(typename FloatType::storage_type Bits) {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
-  constexpr int Bias = FloatType::exponent_bias;
+  constexpr int Bias = FloatType::number::exponent_bias;
 
   constexpr int TotalBits = Fmt::total_bits;
   if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
@@ -210,18 +210,18 @@ MpfrFloat branchlessDecode(typename FloatType::storage_type Bits) {
   bool IsNegative =
       (extractField(Bits, Fmt::sign_offset, Fmt::sign_bits) != 0);
   BitsType RawExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-  BitsType RawMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+  BitsType RawMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
   int Exp = static_cast<int>(RawExp);
 
   int EffExp = (Exp == 0) ? 1 : Exp;
 
   BitsType Sig;
   int SigWidth;
-  if constexpr (Enc::has_implicit_bit) {
-    SigWidth = Fmt::mant_bits;
-    Sig = (Exp == 0) ? RawMant : (RawMant | (BitsType{1} << Fmt::mant_bits));
+  if constexpr (Fmt::implicit_digit) {
+    SigWidth = Fmt::sig_bits;
+    Sig = (Exp == 0) ? RawMant : (RawMant | (BitsType{1} << Fmt::sig_bits));
   } else {
-    SigWidth = Fmt::mant_bits - 1;
+    SigWidth = Fmt::sig_bits - 1;
     Sig = RawMant;
   }
 
@@ -247,8 +247,8 @@ MpfrFloat branchlessDecode(typename FloatType::storage_type Bits) {
 // branchless formula above.
 
 template <typename FloatType> void verifyDecode() {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
   constexpr int HexWidth = (Fmt::total_bits + 3) / 4;
   constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
@@ -259,12 +259,12 @@ template <typename FloatType> void verifyDecode() {
   for (auto Bits : Values) {
     // Skip infinity and NaN — the branchless formula can't represent them
     BitsType Exp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    BitsType Mant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
-    if constexpr (Enc::has_implicit_bit) {
+    BitsType Mant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
+    if constexpr (Fmt::implicit_digit) {
       if (Exp == ExpMax)
         continue;
     } else {
-      constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
+      constexpr BitsType JBit = BitsType{1} << (Fmt::sig_bits - 1);
       constexpr BitsType FracMask = JBit - 1;
       if (Exp == ExpMax && (Mant & FracMask) == 0)
         continue;
@@ -310,15 +310,15 @@ TEST_CASE_TEMPLATE("decode: branchless vs full", T, float16, float32, float64,
 // value produce equal MPFR values from the decode.
 
 template <typename FloatType> void verifyValueEquivalence() {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
   constexpr int HexWidth = (Fmt::total_bits + 3) / 4;
 
-  if constexpr (!Enc::has_implicit_bit) {
-    constexpr int Bias = FloatType::exponent_bias;
+  if constexpr (!Fmt::implicit_digit) {
+    constexpr int Bias = FloatType::number::exponent_bias;
     constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
-    constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
+    constexpr BitsType JBit = BitsType{1} << (Fmt::sig_bits - 1);
     constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
 
     struct EquivPair {

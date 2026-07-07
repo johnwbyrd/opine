@@ -254,6 +254,16 @@ template <typename BitsType, int TotalBits> struct RandomPairs {
   }
 };
 
+// Every bit pattern for a TotalBits-wide format. Feasible for FP8
+// (256), tolerable for FP16 (65,536), infeasible above.
+template <typename BitsType, int TotalBits> struct ExhaustiveSingles {
+  template <typename Fn> void operator()(Fn &&Callback) const {
+    constexpr uint64_t Count = uint64_t{1} << TotalBits;
+    for (uint64_t I = 0; I < Count; ++I)
+      Callback(BitsType(I));
+  }
+};
+
 // All singles from a list of interesting values.
 template <typename BitsType> struct TargetedSingles {
   const BitsType *Values;
@@ -365,12 +375,12 @@ template <typename FloatType> struct NanAwareBitExact {
   using BitsType = typename FloatType::storage_type;
 
   static bool isNan(BitsType Bits) {
-    using Fmt = typename FloatType::format;
-    using Enc = typename FloatType::encoding;
+    using Fmt = typename FloatType::layout;
+    using Enc = typename FloatType::number;
     if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
       constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
       BitsType Exp = (Bits >> Fmt::exp_offset) & ExpMax;
-      BitsType Mant = Bits & ((BitsType{1} << Fmt::mant_bits) - 1);
+      BitsType Mant = Bits & ((BitsType{1} << Fmt::sig_bits) - 1);
       return Exp == ExpMax && Mant != 0;
     } else if constexpr (Enc::nan_encoding == NanEncoding::TrapValue) {
       constexpr BitsType TrapVal = BitsType{1} << (Fmt::total_bits - 1);
@@ -398,17 +408,17 @@ template <typename FloatType> struct NanAwareBitExact {
 // Generates edge-case bit patterns from format/encoding parameters.
 // Works for any IEEE 754-style format.
 template <typename FloatType> constexpr auto interestingValues() {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
   constexpr int E = Fmt::exp_bits;
-  constexpr int M = Fmt::mant_bits;
-  constexpr int Bias = FloatType::exponent_bias;
+  constexpr int M = Fmt::sig_bits;
+  constexpr int Bias = FloatType::number::exponent_bias;
   constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
   constexpr BitsType ExpMax = (BitsType{1} << E) - 1;
   constexpr BitsType MantMask = (BitsType{1} << M) - 1;
 
-  if constexpr (Enc::has_implicit_bit) {
+  if constexpr (Fmt::implicit_digit) {
     return std::array<BitsType, 22>{{
         0,                                                         // +0
         SignBit,                                                   // -0

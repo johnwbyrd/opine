@@ -111,8 +111,8 @@ template <typename BitsType> BitsType mpzToBits(const mpz_t Z) {
 
 template <typename FloatType>
 MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
 
   constexpr int TotalBits = Fmt::total_bits;
@@ -165,7 +165,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
     BitsType RawExp =
         extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
     BitsType RawMant =
-        extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+        extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
     if (RawSign != 0 && RawExp == 0 && RawMant == 0) {
       mpfr_set_nan(Result);
       return Result;
@@ -181,11 +181,11 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   BitsType MagExp;
   BitsType MagMant;
 
-  if constexpr (Enc::sign_encoding == SignEncoding::SignMagnitude) {
+  if constexpr (Enc::value_sign == SignMethod::Explicit) {
     IsNegative = (RawSign != 0);
     MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
-  } else if constexpr (Enc::sign_encoding == SignEncoding::TwosComplement) {
+    MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
+  } else if constexpr (Enc::value_sign == SignMethod::RadixComplement) {
     IsNegative = (RawSign != 0);
     if (IsNegative) {
       BitsType Positive;
@@ -197,24 +197,24 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
       }
       MagExp = extractField(Positive, Fmt::exp_offset, Fmt::exp_bits);
       MagMant =
-          extractField(Positive, Fmt::mant_offset, Fmt::mant_bits);
+          extractField(Positive, Fmt::sig_offset, Fmt::sig_bits);
     } else {
       MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+      MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
     }
-  } else if constexpr (Enc::sign_encoding == SignEncoding::OnesComplement) {
+  } else if constexpr (Enc::value_sign == SignMethod::DiminishedRadixComplement) {
     IsNegative = (RawSign != 0);
     if (IsNegative) {
       constexpr BitsType ExpMask = (BitsType{1} << Fmt::exp_bits) - 1;
-      constexpr BitsType MantMask = (BitsType{1} << Fmt::mant_bits) - 1;
+      constexpr BitsType MantMask = (BitsType{1} << Fmt::sig_bits) - 1;
       MagExp =
           extractField(Bits, Fmt::exp_offset, Fmt::exp_bits) ^ ExpMask;
       MagMant =
-          extractField(Bits, Fmt::mant_offset, Fmt::mant_bits) ^
+          extractField(Bits, Fmt::sig_offset, Fmt::sig_bits) ^
           MantMask;
     } else {
       MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = extractField(Bits, Fmt::mant_offset, Fmt::mant_bits);
+      MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
     }
   }
 
@@ -223,13 +223,13 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
 
   if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
-    if constexpr (Enc::has_implicit_bit) {
+    if constexpr (Fmt::implicit_digit) {
       if (MagExp == ExpMax && MagMant == 0) {
         mpfr_set_inf(Result, IsNegative ? -1 : +1);
         return Result;
       }
     } else {
-      constexpr BitsType JBit = BitsType{1} << (Fmt::mant_bits - 1);
+      constexpr BitsType JBit = BitsType{1} << (Fmt::sig_bits - 1);
       constexpr BitsType FracMask = JBit - 1;
       if (MagExp == ExpMax && (MagMant & FracMask) == 0) {
         mpfr_set_inf(Result, IsNegative ? -1 : +1);
@@ -239,7 +239,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   }
 
   if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-    if constexpr (Enc::has_implicit_bit) {
+    if constexpr (Fmt::implicit_digit) {
       if (MagExp == ExpMax && MagMant != 0) {
         mpfr_set_nan(Result);
         return Result;
@@ -265,25 +265,25 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   // Phase 5: Decode finite value (normal or denormal)
 
-  constexpr int Bias = FloatType::exponent_bias;
+  constexpr int Bias = FloatType::number::exponent_bias;
   mpfr_exp_t Exponent;
   BitsType Mantissa;
 
-  if constexpr (Enc::has_implicit_bit) {
+  if constexpr (Fmt::implicit_digit) {
     if (MagExp == 0) {
-      Exponent = 1 - Bias - Fmt::mant_bits;
+      Exponent = 1 - Bias - Fmt::sig_bits;
       Mantissa = MagMant;
     } else {
       Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
-                 Fmt::mant_bits;
-      Mantissa = (BitsType{1} << Fmt::mant_bits) | MagMant;
+                 Fmt::sig_bits;
+      Mantissa = (BitsType{1} << Fmt::sig_bits) | MagMant;
     }
   } else {
     if (MagExp == 0) {
-      Exponent = 1 - Bias - (Fmt::mant_bits - 1);
+      Exponent = 1 - Bias - (Fmt::sig_bits - 1);
     } else {
       Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
-                 (Fmt::mant_bits - 1);
+                 (Fmt::sig_bits - 1);
     }
     Mantissa = MagMant;
   }
@@ -354,12 +354,12 @@ inline MpfrFloat mpfrExactTernaryOp(Op Operation, const MpfrFloat &A,
 
 template <typename FloatType>
 typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
-  using Fmt = typename FloatType::format;
-  using Enc = typename FloatType::encoding;
+  using Fmt = typename FloatType::layout;
+  using Enc = typename FloatType::number;
   using BitsType = typename FloatType::storage_type;
-  constexpr int MantBits = Fmt::mant_bits;
+  constexpr int MantBits = Fmt::sig_bits;
   constexpr int ExpBits = Fmt::exp_bits;
-  constexpr int Bias = FloatType::exponent_bias;
+  constexpr int Bias = FloatType::number::exponent_bias;
   constexpr BitsType ExpAllOnes = (BitsType{1} << ExpBits) - 1;
   constexpr BitsType MantMask = (BitsType{1} << MantBits) - 1;
 
@@ -372,7 +372,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   }();
 
   constexpr int RoundingMantBits =
-      Enc::has_implicit_bit ? MantBits : (MantBits - 1);
+      Fmt::implicit_digit ? MantBits : (MantBits - 1);
 
   constexpr int EminIeee = 1 - Bias;
 
@@ -380,7 +380,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   if (Val.isNan()) {
     if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-      if constexpr (Enc::has_implicit_bit) {
+      if constexpr (Fmt::implicit_digit) {
         return (ExpAllOnes << Fmt::exp_offset) |
                (BitsType{1} << (MantBits - 1));
       } else {
@@ -395,7 +395,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   if (Val.isInf()) {
     if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
       BitsType InfBits;
-      if constexpr (Enc::has_implicit_bit) {
+      if constexpr (Fmt::implicit_digit) {
         InfBits = ExpAllOnes << Fmt::exp_offset;
       } else {
         constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
@@ -447,7 +447,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     if (BiasedExp > MaxBiasedExp) {
       if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
         BitsType InfBits;
-        if constexpr (Enc::has_implicit_bit) {
+        if constexpr (Fmt::implicit_digit) {
           InfBits = ExpAllOnes << Fmt::exp_offset;
         } else {
           constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
@@ -474,7 +474,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     BitsType Mant = detail::mpzToBits<BitsType>(Z);
     mpz_clear(Z);
 
-    if constexpr (Enc::has_implicit_bit) {
+    if constexpr (Fmt::implicit_digit) {
       if (Mant >= (BitsType{1} << MantBits)) {
         StoredExp = 1;
         StoredMant = 0;
@@ -507,7 +507,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   if (Negative)
     Result |= BitsType{1} << Fmt::sign_offset;
   Result |= StoredExp << Fmt::exp_offset;
-  Result |= StoredMant << Fmt::mant_offset;
+  Result |= StoredMant << Fmt::sig_offset;
 
   return Result;
 }
@@ -539,7 +539,7 @@ template <typename FloatType> struct MpfrAdapter {
   }
 
   TestOutput<BitsType> dispatchUnary(Op O, BitsType A) const {
-    using Fmt = typename FloatType::format;
+    using Fmt = typename FloatType::layout;
     // Neg and Abs are non-computational sign-bit operations per IEEE 754.
     // They must not decode/reencode (which would normalize unnormals).
     constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;

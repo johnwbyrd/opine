@@ -29,7 +29,7 @@ template <typename FloatType> struct SoftFloatAdapter;
 // ===================================================================
 
 template <> struct SoftFloatAdapter<opine::float16> {
-  using Fmt = opine::float16::format;
+  using Fmt = opine::float16::layout;
   using BitsType = opine::float16::storage_type;
   static constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
@@ -82,7 +82,7 @@ template <> struct SoftFloatAdapter<opine::float16> {
 // ===================================================================
 
 template <> struct SoftFloatAdapter<opine::float32> {
-  using Fmt = opine::float32::format;
+  using Fmt = opine::float32::layout;
   using BitsType = opine::float32::storage_type;
   static constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
@@ -135,7 +135,7 @@ template <> struct SoftFloatAdapter<opine::float32> {
 // ===================================================================
 
 template <> struct SoftFloatAdapter<opine::float64> {
-  using Fmt = opine::float64::format;
+  using Fmt = opine::float64::layout;
   using BitsType = opine::float64::storage_type;
   static constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
@@ -189,7 +189,7 @@ template <> struct SoftFloatAdapter<opine::float64> {
 // Note: SoftFloat has no extF80_mulAdd, so dispatchTernary is unsupported.
 
 template <> struct SoftFloatAdapter<opine::extFloat80> {
-  using Fmt = opine::extFloat80::format;
+  using Fmt = opine::extFloat80::layout;
   using BitsType = opine::extFloat80::storage_type;
   static constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
@@ -239,7 +239,7 @@ template <> struct SoftFloatAdapter<opine::extFloat80> {
 // ===================================================================
 
 template <> struct SoftFloatAdapter<opine::float128> {
-  using Fmt = opine::float128::format;
+  using Fmt = opine::float128::layout;
   using BitsType = opine::float128::storage_type;
   static constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
