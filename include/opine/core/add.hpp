@@ -33,6 +33,7 @@
 // the result.
 
 #include "opine/core/arith_detail.hpp"
+#include "opine/core/bits.hpp"
 #include "opine/core/pack_unpack.hpp"
 
 namespace opine {
@@ -47,9 +48,13 @@ add(typename T::storage_type a, typename T::storage_type b) {
   using Num = typename T::number;
   using Rnd = typename T::rounding;
   using Storage = typename T::storage_type;
-  using Wide = unsigned long long;
 
   constexpr int SigBits = Num::significand::digit_count;
+
+  // The working type holds the wider significand plus guard bits and
+  // one carry bit. Power-of-two widths keep shiftRightSticky's
+  // sizeof-based full-shift guard exact.
+  using Wide = bits_t<(SigBits + 3 + 1 > 64) ? 128 : 64>;
   constexpr int Bias = Num::exponent_bias;
   constexpr int ExpMax = (1 << Fmt::exp_bits) - 1;
   constexpr int MaxBiasedExp =
@@ -111,10 +116,14 @@ add(typename T::storage_type a, typename T::storage_type b) {
         (ua.sign == ub.sign) ? ua.sign : detail::exactZeroSumSign<Rnd>();
     return packSpecial(ValueCategory::Zero, sum_sign);
   }
+  // Repack rather than return the raw input: unpack canonicalizes
+  // non-canonical explicit-J encodings (x87 unnormals and
+  // pseudo-denormals), and zero + x must return x's canonical form.
+  // For implicit-digit formats pack∘unpack is the identity.
   if (ua.category == ValueCategory::Zero)
-    return b;
+    return pack<T>(ub);
   if (ub.category == ValueCategory::Zero)
-    return a;
+    return pack<T>(ua);
 
   // ---------- Finite + Finite ----------
 
@@ -197,11 +206,11 @@ add(typename T::storage_type a, typename T::storage_type b) {
     result_exp += 1;
   }
 
-  // Subnormal-to-normal promotion: rounding may push a
-  // subnormal significand up to include the implicit-bit
-  // position, at which point biased_exp should be 1.
-  if (result_exp == 0 && Fmt::implicit_digit &&
-      stored_sig >= (Wide{1} << Fmt::sig_bits)) {
+  // Subnormal-to-normal promotion: rounding may push a subnormal
+  // significand up into the leading-digit position (the implicit
+  // bit, or the stored J-bit), at which point biased_exp should
+  // be 1 — the canonical form of that value.
+  if (result_exp == 0 && stored_sig >= (Wide{1} << (SigBits - 1))) {
     result_exp = 1;
   }
 
