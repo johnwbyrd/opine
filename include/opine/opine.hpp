@@ -1,6 +1,7 @@
 #ifndef OPINE_HPP
 #define OPINE_HPP
 
+#include "opine/core/add.hpp"
 #include "opine/core/bits.hpp"
 #include "opine/core/compare.hpp"
 #include "opine/core/compute_format.hpp"

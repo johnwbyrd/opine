@@ -1,0 +1,315 @@
+#ifndef OPINE_CORE_ADD_HPP
+#define OPINE_CORE_ADD_HPP
+
+// Addition for FloatingPoint composites.
+//
+// The design's operation pipeline in one function:
+//
+//   1. Unpack both operands; apply input-denormal flush per Number.
+//   2. Dispatch on the (category_a × category_b) grid: NaN, Inf,
+//      Zero → shortcut with the appropriate encoded value.
+//   3. Finite + Finite:
+//      a. Compute effective biased exponents (denormals → 1).
+//      b. Order operands so |ua| ≥ |ub|.
+//      c. Widen both significands by GBits guard bits, align ub
+//         with a sticky-accumulating right shift.
+//      d. Same-sign → sum, different-sign → subtract. Exact
+//         cancellation returns signed zero per rounding policy.
+//      e. Normalize: right-shift on carry, left-shift on
+//         cancellation.
+//      f. Denormal path: if the result exponent falls below the
+//         format's minimum normal, shift right (sticky) into the
+//         subnormal range.
+//      g. Round guard/round/sticky per the Type's Rounding.
+//      h. Handle round-up overflow into the next binade.
+//      i. Overflow → Inf if the format has it, saturate otherwise.
+//      j. Denormal-output flush per denormal_mode.
+//      k. IntegerExtremes overflow-collision: if the assembled
+//         finite bit pattern lands on the +Inf pattern, emit Inf.
+//
+// Guard bits are fixed at 3 (G/R/S) — that is the max any
+// currently supported Rounding policy needs, and using a wider
+// working significand than Rounding::guard_bits does not change
+// the result.
+
+#include <type_traits>
+
+#include "opine/core/pack_unpack.hpp"
+#include "opine/core/rounding.hpp"
+
+namespace opine {
+
+namespace detail {
+
+// Shift a wide value right by 'shift' bits, folding any bits that
+// fall off into an OR'd sticky at bit 0.
+template <typename Wide>
+constexpr Wide shiftRightSticky(Wide value, int shift) {
+  if (shift <= 0)
+    return value;
+  if (shift >= int(sizeof(Wide) * 8))
+    return (value != 0) ? Wide{1} : Wide{0};
+  Wide mask = (Wide{1} << shift) - 1;
+  Wide lost = value & mask;
+  Wide shifted = value >> shift;
+  if (lost != 0)
+    shifted |= Wide{1};
+  return shifted;
+}
+
+// Position of the highest set bit, or -1 if zero. Constexpr and
+// portable.
+template <typename Wide> constexpr int msbPos(Wide value) {
+  int pos = -1;
+  while (value) {
+    pos++;
+    value >>= 1;
+  }
+  return pos;
+}
+
+// Decide whether to round the pre-rounding integer significand up.
+template <typename Rnd>
+constexpr bool shouldRoundUp(bool lsb, bool guard, bool round_bit, bool sticky,
+                             bool negative) {
+  const bool any_low = guard || round_bit || sticky;
+  if constexpr (std::is_same_v<Rnd, rounding::TowardZero>) {
+    return false;
+  } else if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesToEven>) {
+    if (!guard)
+      return false;
+    if (round_bit || sticky)
+      return true;
+    return lsb; // exact tie → to even
+  } else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>) {
+    return any_low && !negative;
+  } else if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>) {
+    return any_low && negative;
+  }
+  return false;
+}
+
+// Sign of an exact zero result of add. IEEE 754 §6.3: for all
+// rounding modes except TowardNegative, the sum of two operands
+// with opposite signs is +0; TowardNegative gives -0.
+template <typename Rnd> constexpr bool exactZeroSumSign() {
+  return std::is_same_v<Rnd, rounding::TowardNegative>;
+}
+
+} // namespace detail
+
+// -----------------------------------------------------------------
+// add
+// -----------------------------------------------------------------
+template <typename T>
+constexpr typename T::storage_type
+add(typename T::storage_type a, typename T::storage_type b) {
+  using Fmt = typename T::layout;
+  using Num = typename T::number;
+  using Rnd = typename T::rounding;
+  using Storage = typename T::storage_type;
+  using Wide = unsigned long long;
+
+  constexpr int SigBits = Num::significand::digit_count;
+  constexpr int Bias = Num::exponent_bias;
+  constexpr int ExpMax = (1 << Fmt::exp_bits) - 1;
+  constexpr int MaxBiasedExp =
+      (Num::nan_encoding == NanEncoding::ReservedExponent ||
+       Num::inf_encoding == InfEncoding::ReservedExponent)
+          ? (ExpMax - 1)
+          : ExpMax;
+  constexpr int GBits = 3;
+  constexpr int TotalBits = Fmt::total_bits;
+  constexpr Storage SigStoredMask = (Storage{1} << Fmt::sig_bits) - 1;
+
+  UnpackedFloat<Storage> ua = unpack<T>(a);
+  UnpackedFloat<Storage> ub = unpack<T>(b);
+
+  // ---------- Input denormal flush ----------
+  if constexpr (Num::denormal_mode == DenormalMode::FlushInputs ||
+                Num::denormal_mode == DenormalMode::FlushBoth) {
+    auto flush = [](UnpackedFloat<Storage> &u) {
+      if (u.category == ValueCategory::Finite && u.biased_exp == 0) {
+        u.category = ValueCategory::Zero;
+        // Match the oracle: denormal patterns decode to +0 when
+        // negative_zero=DoesNotExist (the only currently exercised
+        // FlushInputs combination).
+        if constexpr (Num::negative_zero == NegativeZero::DoesNotExist)
+          u.sign = false;
+      }
+    };
+    flush(ua);
+    flush(ub);
+  }
+
+  // Small helper: pack a special-value category.
+  auto packSpecial = [](ValueCategory c, bool sign) -> Storage {
+    UnpackedFloat<Storage> u{};
+    u.category = c;
+    u.sign = sign;
+    return pack<T>(u);
+  };
+
+  // ---------- Special value dispatch ----------
+
+  if (ua.category == ValueCategory::NaN || ub.category == ValueCategory::NaN)
+    return packSpecial(ValueCategory::NaN, false);
+
+  if (ua.category == ValueCategory::Infinity &&
+      ub.category == ValueCategory::Infinity) {
+    if (ua.sign == ub.sign)
+      return packSpecial(ValueCategory::Infinity, ua.sign);
+    return packSpecial(ValueCategory::NaN, false); // Inf − Inf = NaN
+  }
+  if (ua.category == ValueCategory::Infinity)
+    return packSpecial(ValueCategory::Infinity, ua.sign);
+  if (ub.category == ValueCategory::Infinity)
+    return packSpecial(ValueCategory::Infinity, ub.sign);
+
+  if (ua.category == ValueCategory::Zero &&
+      ub.category == ValueCategory::Zero) {
+    bool sum_sign =
+        (ua.sign == ub.sign) ? ua.sign : detail::exactZeroSumSign<Rnd>();
+    return packSpecial(ValueCategory::Zero, sum_sign);
+  }
+  if (ua.category == ValueCategory::Zero)
+    return b;
+  if (ub.category == ValueCategory::Zero)
+    return a;
+
+  // ---------- Finite + Finite ----------
+
+  // Effective biased exponents. Denormals live at exponent 1 in
+  // math terms even though the field reads 0.
+  int ea = (ua.biased_exp == 0) ? 1 : ua.biased_exp;
+  int eb = (ub.biased_exp == 0) ? 1 : ub.biased_exp;
+
+  // Order so ua carries the larger magnitude.
+  if (ea < eb || (ea == eb && ua.significand < ub.significand)) {
+    UnpackedFloat<Storage> tmp = ua;
+    ua = ub;
+    ub = tmp;
+    int et = ea;
+    ea = eb;
+    eb = et;
+  }
+
+  Wide sa = Wide(ua.significand) << GBits;
+  Wide sb = Wide(ub.significand) << GBits;
+  sb = detail::shiftRightSticky(sb, ea - eb);
+
+  bool result_sign = ua.sign;
+  Wide magnitude;
+  if (ua.sign == ub.sign) {
+    magnitude = sa + sb;
+  } else {
+    magnitude = sa - sb;
+    if (magnitude == 0)
+      return packSpecial(ValueCategory::Zero,
+                         detail::exactZeroSumSign<Rnd>());
+  }
+
+  int result_exp = ea;
+  const int target_msb = SigBits + GBits - 1;
+  int cur_msb = detail::msbPos(magnitude);
+
+  if (cur_msb > target_msb) {
+    // Carry from add: right-shift with sticky.
+    int rs = cur_msb - target_msb;
+    magnitude = detail::shiftRightSticky(magnitude, rs);
+    result_exp += rs;
+  } else if (cur_msb < target_msb) {
+    // Cancellation from subtract: left-shift, exp goes down.
+    int ls = target_msb - cur_msb;
+    magnitude <<= ls;
+    result_exp -= ls;
+  }
+
+  // Subnormal range: shift the significand right to align with
+  // biased_exp = 0.
+  if (result_exp < 1) {
+    int extra = 1 - result_exp;
+    magnitude = detail::shiftRightSticky(magnitude, extra);
+    result_exp = 0;
+  }
+
+  // ---------- Round ----------
+  Wide sig_top = magnitude >> GBits;
+  bool lsb = (sig_top & Wide{1}) != 0;
+  bool guard_bit = ((magnitude >> (GBits - 1)) & Wide{1}) != 0;
+  bool round_bit =
+      (GBits >= 2) ? ((magnitude >> (GBits - 2)) & Wide{1}) != 0 : false;
+  Wide sticky_mask = (GBits >= 2) ? ((Wide{1} << (GBits - 2)) - 1) : Wide{0};
+  bool sticky = (magnitude & sticky_mask) != 0;
+
+  bool round_up = detail::shouldRoundUp<Rnd>(lsb, guard_bit, round_bit, sticky,
+                                             result_sign);
+
+  Wide stored_sig = sig_top;
+  if (round_up)
+    stored_sig += 1;
+
+  // Round-up carried into a new binade (1.111… → 10.000…). The
+  // semantic significand for normals lives in [1<<(SigBits-1),
+  // 1<<SigBits); reaching 1<<SigBits means the leading bit just
+  // moved up one position and we halve + bump exponent.
+  if (stored_sig >= (Wide{1} << SigBits)) {
+    stored_sig >>= 1;
+    result_exp += 1;
+  }
+
+  // Subnormal-to-normal promotion: rounding may push a
+  // subnormal significand up to include the implicit-bit
+  // position, at which point biased_exp should be 1.
+  if (result_exp == 0 && Fmt::implicit_digit &&
+      stored_sig >= (Wide{1} << Fmt::sig_bits)) {
+    result_exp = 1;
+  }
+
+  // ---------- Overflow ----------
+  if (result_exp > MaxBiasedExp) {
+    if constexpr (Num::inf_encoding != InfEncoding::None) {
+      return packSpecial(ValueCategory::Infinity, result_sign);
+    }
+    // Saturate to max finite.
+    result_exp = MaxBiasedExp;
+    stored_sig = (Wide{1} << SigBits) - 1;
+  }
+
+  // ---------- Output denormal flush ----------
+  if constexpr (Num::denormal_mode == DenormalMode::FlushToZero ||
+                Num::denormal_mode == DenormalMode::FlushBoth) {
+    if (result_exp == 0 && stored_sig != 0) {
+      bool zero_sign =
+          (Num::negative_zero == NegativeZero::Exists) ? result_sign : false;
+      return packSpecial(ValueCategory::Zero, zero_sign);
+    }
+  }
+
+  // ---------- IntegerExtremes overflow collision ----------
+  // If the assembled positive-magnitude field pattern reaches the
+  // +Inf bit pattern (0x7F…F), the "finite" result actually
+  // overflows.
+  if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+    Storage tentative =
+        (Storage(result_exp) << Fmt::exp_offset) |
+        ((Storage(stored_sig) & SigStoredMask) << Fmt::sig_offset);
+    constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
+    if (tentative >= PosInf)
+      return packSpecial(ValueCategory::Infinity, result_sign);
+  }
+
+  // ---------- Assemble and pack ----------
+  UnpackedFloat<Storage> result{};
+  result.category = (stored_sig == 0 && result_exp == 0)
+                        ? ValueCategory::Zero
+                        : ValueCategory::Finite;
+  result.sign = result_sign;
+  result.biased_exp = result_exp;
+  result.significand = Storage(stored_sig);
+  return pack<T>(result);
+}
+
+} // namespace opine
+
+#endif // OPINE_CORE_ADD_HPP
