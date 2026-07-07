@@ -7,6 +7,7 @@
 #include "opine/core/compute_format.hpp"
 #include "opine/core/exceptions.hpp"
 #include "opine/core/layout.hpp"
+#include "opine/core/mul.hpp"
 #include "opine/core/neg_abs.hpp"
 #include "opine/core/number.hpp"
 #include "opine/core/pack_unpack.hpp"

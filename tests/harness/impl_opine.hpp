@@ -7,7 +7,7 @@
 // implemented, the adapter converts the harness's uint bit
 // patterns into an OPINE call and back.
 //
-// Currently implemented: Eq, Lt, Le (from opine::eq/lt/le).
+// Currently implemented: Add, Mul, Eq, Lt, Le, Neg, Abs.
 // Unimplemented ops return {0, 0} so the harness can still
 // dispatch mixed op sets without special-casing.
 
@@ -24,6 +24,7 @@ template <typename FloatType> struct OpineAdapter {
   TestOutput<BitsType> dispatch(Op O, BitsType A, BitsType B) const {
     switch (O) {
     case Op::Add: return {opine::add<FloatType>(A, B), 0};
+    case Op::Mul: return {opine::mul<FloatType>(A, B), 0};
     case Op::Eq: return {BitsType(opine::eq<FloatType>(A, B) ? 1 : 0), 0};
     case Op::Lt: return {BitsType(opine::lt<FloatType>(A, B) ? 1 : 0), 0};
     case Op::Le: return {BitsType(opine::le<FloatType>(A, B) ? 1 : 0), 0};
