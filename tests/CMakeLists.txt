@@ -71,3 +71,11 @@ if(OPINE_HAS_ORACLE)
     target_include_directories(test_opine_mul PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_mul COMMAND test_opine_mul)
 endif()
+
+# TestFloat conformance shim (TDD step 5): OPINE vs SoftFloat over
+# Berkeley TestFloat's generated cases. No MPFR needed.
+add_executable(test_opine_testfloat testfloat/test_opine_testfloat.cpp)
+target_link_libraries(test_opine_testfloat
+    PRIVATE opine softfloat testfloat_lib doctest_with_main)
+target_compile_definitions(test_opine_testfloat PRIVATE FLOAT16)
+add_test(NAME test_opine_testfloat COMMAND test_opine_testfloat)
