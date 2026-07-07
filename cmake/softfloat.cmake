@@ -66,6 +66,29 @@ file(GLOB SF_COMMON_SOURCES "${SF_SOURCE_DIR}/*.c")
 # Architecture-specific sources
 file(GLOB SF_ARCH_SOURCES "${SF_SOURCE_DIR}/${SOFTFLOAT_SPECIALIZE}/*.c")
 
+# The specialization directories carry the extF80/f128 NaN handlers in
+# two mutually exclusive variants: *UI (FAST_INT64) and *M (multi-word).
+# Mirror upstream's per-build Makefiles and drop the wrong set — the
+# wrong variant calls primitives that don't exist in the other build,
+# which Clang rejects as an implicit function declaration.
+if(SOFTFLOAT_FAST_INT64)
+    set(_SF_ARCH_EXCLUDE
+        s_commonNaNToExtF80M s_commonNaNToF128M
+        s_extF80MToCommonNaN s_f128MToCommonNaN
+        s_propagateNaNExtF80M s_propagateNaNF128M
+    )
+else()
+    set(_SF_ARCH_EXCLUDE
+        s_commonNaNToExtF80UI s_commonNaNToF128UI
+        s_extF80UIToCommonNaN s_f128UIToCommonNaN
+        s_propagateNaNExtF80UI s_propagateNaNF128UI
+    )
+endif()
+list(TRANSFORM _SF_ARCH_EXCLUDE
+     PREPEND "${SF_SOURCE_DIR}/${SOFTFLOAT_SPECIALIZE}/")
+list(TRANSFORM _SF_ARCH_EXCLUDE APPEND ".c")
+list(REMOVE_ITEM SF_ARCH_SOURCES ${_SF_ARCH_EXCLUDE})
+
 # The source directory contains internal helpers for both the FAST_INT64 and
 # multi-word builds. These are mutually exclusive — exclude the wrong set.
 if(SOFTFLOAT_FAST_INT64)

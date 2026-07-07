@@ -84,12 +84,17 @@ private:
 
 namespace detail {
 
+// Never shift on the final loop iteration: for _BitInt storage the
+// type's value width can equal 8 (or not be a multiple of 8), and a
+// shift by >= the width is undefined — Clang miscompiles it. sizeof
+// rounds up, so the guarded shifts are always strictly in-width.
 template <typename BitsType> void bitsToMpz(mpz_t Z, BitsType Val) {
   constexpr int NumBytes = sizeof(BitsType);
   unsigned char Bytes[NumBytes];
   for (int I = 0; I < NumBytes; ++I) {
-    Bytes[I] = static_cast<unsigned char>(Val & BitsType{0xFF});
-    Val >>= 8;
+    Bytes[I] = static_cast<unsigned char>(Val);
+    if (I + 1 < NumBytes)
+      Val >>= 8;
   }
   mpz_import(Z, NumBytes, -1, 1, 0, 0, Bytes);
 }
@@ -99,8 +104,11 @@ template <typename BitsType> BitsType mpzToBits(const mpz_t Z) {
   unsigned char Bytes[NumBytes] = {};
   mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
   BitsType Val = 0;
-  for (int I = NumBytes - 1; I >= 0; --I)
-    Val = (Val << 8) | BitsType(Bytes[I]);
+  for (int I = NumBytes - 1; I >= 0; --I) {
+    if (I != NumBytes - 1)
+      Val <<= 8;
+    Val |= BitsType(Bytes[I]);
+  }
   return Val;
 }
 
@@ -117,10 +125,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   using BitsType = typename FloatType::storage_type;
 
   constexpr int TotalBits = Fmt::total_bits;
-  if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-    constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
-    Bits &= WordMask;
-  }
+  Bits &= opine::maskLow<BitsType>(TotalBits);
 
   MpfrFloat Result;
 
@@ -316,15 +321,28 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 // Exact arithmetic operations at 256-bit precision
 // ===================================================================
 
+// The Rounding policy is threaded through as an MPFR mode because of
+// IEEE 754 §6.3: an exact zero sum is -0 under roundTowardNegative
+// and +0 under every other mode, and MPFR applies that rule at the
+// operation, not at the later format-rounding step. Only RNDD ever
+// differs from RNDN here — the numeric rounding at 256-bit working
+// precision is floor in both steps for TowardNegative, and floor is
+// idempotent across precisions, so no double-rounding hazard.
+template <typename Rnd> constexpr mpfr_rnd_t mpfrExactOpMode() {
+  return std::is_same_v<Rnd, rounding::TowardNegative> ? MPFR_RNDD
+                                                       : MPFR_RNDN;
+}
+
 inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
-                             const MpfrFloat &B) {
+                             const MpfrFloat &B,
+                             mpfr_rnd_t Mode = MPFR_RNDN) {
   MpfrFloat Result;
   switch (Operation) {
-  case Op::Add: mpfr_add(Result, A, B, MPFR_RNDN); break;
-  case Op::Sub: mpfr_sub(Result, A, B, MPFR_RNDN); break;
-  case Op::Mul: mpfr_mul(Result, A, B, MPFR_RNDN); break;
-  case Op::Div: mpfr_div(Result, A, B, MPFR_RNDN); break;
-  case Op::Rem: mpfr_remainder(Result, A, B, MPFR_RNDN); break;
+  case Op::Add: mpfr_add(Result, A, B, Mode); break;
+  case Op::Sub: mpfr_sub(Result, A, B, Mode); break;
+  case Op::Mul: mpfr_mul(Result, A, B, Mode); break;
+  case Op::Div: mpfr_div(Result, A, B, Mode); break;
+  case Op::Rem: mpfr_remainder(Result, A, B, Mode); break;
   default: break;
   }
   return Result;
@@ -439,11 +457,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   // Necessary when storage_type is wider than the format (e.g., a
   // 12-bit padded format stored in uint16_t).
   auto MaskWidth = [](BitsType b) -> BitsType {
-    if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-      constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
-      return b & Mask;
-    }
-    return b;
+    return b & opine::maskLow<BitsType>(TotalBits);
   };
 
   // Apply the Number's value_sign to a positive-magnitude bit
@@ -508,6 +522,30 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   auto EmitInfOrSaturate = [&](bool negative) -> BitsType {
     return ApplySign(PosInfBits(), negative);
+  };
+
+  // Positive-magnitude largest-finite pattern.
+  auto MaxFiniteBits = [&]() -> BitsType {
+    if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes)
+      return ((BitsType{1} << (TotalBits - 1)) - 1) - 1; // one below +Inf
+    // ReservedExponent (and None, where PosInfBits already
+    // saturates): max biased exponent, all-ones significand. For
+    // explicit-J-bit formats that is J=1 plus an all-ones fraction —
+    // the same all-ones stored field.
+    return (BitsType(MaxBiasedExp) << Fmt::exp_offset) |
+           (MantMask << Fmt::sig_offset);
+  };
+
+  // Finite result that overflowed the format. IEEE 754 §7.4: the
+  // rounding mode decides between Inf and the largest finite value.
+  // (True infinities from the exact computation bypass this and
+  // always emit Inf via EmitInfOrSaturate.)
+  auto EmitOverflow = [&](bool negative) -> BitsType {
+    if constexpr (Num::inf_encoding != InfEncoding::None) {
+      if (!opine::detail::overflowRoundsToInf<Rnd>(negative))
+        return ApplySign(MaxFiniteBits(), negative);
+    }
+    return EmitInfOrSaturate(negative);
   };
 
   // Signed zero. -0 exists only when the Number opts in; for those
@@ -592,7 +630,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
     const int BiasedExp = ExpAdj + Bias;
     if (BiasedExp > MaxBiasedExp)
-      return EmitInfOrSaturate(Negative);
+      return EmitOverflow(Negative);
 
     StoredExp = BitsType(BiasedExp);
     StoredMant = IntSig & MantMask;
@@ -652,7 +690,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
     constexpr BitsType PosInf = (BitsType{1} << (TotalBits - 1)) - 1;
     if (Positive >= PosInf)
-      return EmitInfOrSaturate(Negative);
+      return EmitOverflow(Negative);
   }
 
   return ApplySign(Positive, Negative);
@@ -680,7 +718,8 @@ template <typename FloatType> struct MpfrAdapter {
     }
 
     // Arithmetic ops: compute exact, round to format
-    MpfrFloat Exact = mpfrExactOp(O, Ma, Mb);
+    MpfrFloat Exact = mpfrExactOp(
+        O, Ma, Mb, mpfrExactOpMode<typename FloatType::rounding>());
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 
@@ -701,11 +740,7 @@ template <typename FloatType> struct MpfrAdapter {
     constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
 
     auto MaskWidth = [](BitsType b) -> BitsType {
-      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
-        return b & Mask;
-      }
-      return b;
+      return b & opine::maskLow<BitsType>(TotalBits);
     };
 
     auto IsNanBitPattern = [&](BitsType b) -> bool {

@@ -202,10 +202,7 @@ MpfrFloat branchlessDecode(typename FloatType::storage_type Bits) {
   constexpr int Bias = FloatType::number::exponent_bias;
 
   constexpr int TotalBits = Fmt::total_bits;
-  if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-    constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
-    Bits &= WordMask;
-  }
+  Bits &= opine::maskLow<BitsType>(TotalBits);
 
   bool IsNegative =
       (extractField(Bits, Fmt::sign_offset, Fmt::sign_bits) != 0);

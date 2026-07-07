@@ -21,7 +21,11 @@ FetchContent_Declare(doctest
     GIT_REPOSITORY https://github.com/doctest/doctest.git
     GIT_TAG v2.4.11
 )
+# doctest v2.4.11 declares cmake_minimum_required(VERSION 3.0), which
+# CMake 4 rejects outright; treat it as 3.5 so configuration succeeds.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(doctest)
+unset(CMAKE_POLICY_VERSION_MINIMUM)
 
 # Oracle cross-validation tests (only if MPFR available)
 if(OPINE_HAS_ORACLE)

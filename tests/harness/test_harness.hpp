@@ -255,11 +255,7 @@ template <typename BitsType, int TotalBits> struct RandomPairs {
       BitsType Val = 0;
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
         Val |= BitsType(Rng()) << (I * ChunkBits);
-      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
-        Val &= Mask;
-      }
-      return Val;
+      return Val & opine::maskLow<BitsType>(TotalBits);
     };
 
     for (int I = 0; I < Count; ++I)
@@ -301,11 +297,7 @@ template <typename BitsType, int TotalBits> struct RandomSingles {
       BitsType Val = 0;
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
         Val |= BitsType(Rng()) << (I * ChunkBits);
-      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
-        Val &= Mask;
-      }
-      return Val;
+      return Val & opine::maskLow<BitsType>(TotalBits);
     };
 
     for (int I = 0; I < Count; ++I)
@@ -339,11 +331,7 @@ template <typename BitsType, int TotalBits> struct RandomTriples {
       BitsType Val = 0;
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
         Val |= BitsType(Rng()) << (I * ChunkBits);
-      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-        constexpr BitsType Mask = (BitsType{1} << TotalBits) - 1;
-        Val &= Mask;
-      }
-      return Val;
+      return Val & opine::maskLow<BitsType>(TotalBits);
     };
 
     for (int I = 0; I < Count; ++I)

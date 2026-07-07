@@ -34,6 +34,17 @@
 
 namespace opine::testing {
 
+// Rounding-parameterized variants of the predefined bundles, for
+// encoding × rounding sweeps. The predefined aliases in type.hpp fix
+// the Rounding axis to its default; these leave it open.
+template <int E, int M, typename Rnd>
+using IeeeR = Type<numbers::IEEE754<E, M>, layouts::IEEE<E, M, true>, Rnd>;
+template <int E, int M, typename Rnd>
+using RbjR =
+    Type<numbers::RbjTwosComplement<E, M>, layouts::IEEE<E, M, true>, Rnd>;
+template <typename Rnd>
+using FnuzR = Type<numbers::E4M3FNUZ, layouts::IEEE<4, 3, true>, Rnd>;
+
 template <typename T> struct GenericBinaryFpTest {
   using Storage = typename T::storage_type;
   static constexpr int TotalBits = T::layout::total_bits;
