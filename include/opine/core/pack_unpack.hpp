@@ -208,7 +208,11 @@ unpack(typename T::storage_type bits) {
 
   if (raw_sig == 0 && (raw_exp == 0 || !Layout::implicit_digit)) {
     u.category = ValueCategory::Zero;
-    u.sign = sign;
+    // When the Number has no negative zero, a sign-bit-set zero
+    // pattern is a redundant encoding of +0 (the fnuz NaN case was
+    // already dispatched above) — decode it unsigned, matching the
+    // oracle.
+    u.sign = sign && Number::negative_zero == NegativeZero::Exists;
     return u;
   }
 
