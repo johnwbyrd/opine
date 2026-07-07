@@ -40,6 +40,15 @@
 
 namespace opine {
 
+// mul's working type tops out at 128 bits, so the exact significand
+// product must fit: float128 (2×113 = 226 bits) needs a multi-word
+// scheme — follow-up work. Callers that dispatch generically (e.g.
+// the test adapter) can check this instead of tripping the
+// static_assert.
+template <typename T>
+inline constexpr bool mul_supported =
+    2 * T::number::significand::digit_count <= 128;
+
 // -----------------------------------------------------------------
 // mul
 // -----------------------------------------------------------------
@@ -67,6 +76,8 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   // the (SigBits + GBits)-bit normalized form. Use a power-of-two
   // width so shiftRightSticky's sizeof-based full-shift guard is
   // exact.
+  static_assert(mul_supported<T>,
+                "mul's working type tops out at 128 bits");
   using Wide = bits_t<(2 * SigBits + GBits > 64) ? 128 : 64>;
 
   UnpackedFloat<Storage> ua = unpack<T>(a);
@@ -172,11 +183,11 @@ mul(typename T::storage_type a, typename T::storage_type b) {
     result_exp += 1;
   }
 
-  // Subnormal-to-normal promotion: rounding may push a
-  // subnormal significand up to include the implicit-bit
-  // position, at which point biased_exp should be 1.
-  if (result_exp == 0 && Fmt::implicit_digit &&
-      stored_sig >= (Wide{1} << Fmt::sig_bits)) {
+  // Subnormal-to-normal promotion: rounding may push a subnormal
+  // significand up into the leading-digit position (the implicit
+  // bit, or the stored J-bit), at which point biased_exp should
+  // be 1 — the canonical form of that value.
+  if (result_exp == 0 && stored_sig >= (Wide{1} << (SigBits - 1))) {
     result_exp = 1;
   }
 

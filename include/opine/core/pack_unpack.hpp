@@ -16,6 +16,7 @@
 // This slice covers Explicit and RadixComplement value_sign only.
 // DiminishedRadixComplement (CDC 6600) is deferred.
 
+#include "opine/core/arith_detail.hpp"
 #include "opine/core/bits.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/number.hpp"
@@ -168,11 +169,12 @@ unpack(typename T::storage_type bits) {
         return u;
       }
     } else {
-      // Explicit leading digit: Inf requires J-bit set, fraction zero.
+      // Explicit leading digit: max exponent with zero fraction is
+      // infinity whether or not J is set — a clear J-bit here is the
+      // x87 pseudo-infinity, which decodes to the same value.
       constexpr Storage JBit = Storage{1} << (Layout::sig_bits - 1);
       constexpr Storage FracMask = JBit - 1;
-      if (raw_exp == ExpMax && (raw_sig & FracMask) == 0 &&
-          (raw_sig & JBit) != 0) {
+      if (raw_exp == ExpMax && (raw_sig & FracMask) == 0) {
         u.category = ValueCategory::Infinity;
         u.sign = sign;
         return u;
@@ -199,8 +201,12 @@ unpack(typename T::storage_type bits) {
   }
 
   // ---------- Phase 4: zero ----------
+  // For explicit-leading-digit formats a zero significand encodes
+  // zero at ANY exponent (the x87 "unnormal-zero"); for implicit
+  // formats a zero stored significand with nonzero exponent is a
+  // power of two.
 
-  if (raw_exp == 0 && raw_sig == 0) {
+  if (raw_sig == 0 && (raw_exp == 0 || !Layout::implicit_digit)) {
     u.category = ValueCategory::Zero;
     u.sign = sign;
     return u;
@@ -210,18 +216,41 @@ unpack(typename T::storage_type bits) {
 
   u.category = ValueCategory::Finite;
   u.sign = sign;
-  u.biased_exp = static_cast<int>(raw_exp);
 
   if constexpr (Layout::implicit_digit) {
     // Semantic significand = stored bits, with implicit leading 1
     // for normals and leading 0 for denormals.
+    u.biased_exp = static_cast<int>(raw_exp);
     if (raw_exp == 0)
       u.significand = raw_sig;
     else
       u.significand = raw_sig | (Storage{1} << Layout::sig_bits);
   } else {
-    // Leading digit is stored explicitly; use as-is.
-    u.significand = raw_sig;
+    // Leading digit is stored explicitly. Canonicalize the
+    // non-canonical encodings so downstream arithmetic can rely on
+    // the normal-range invariant. Unnormals (nonzero exponent, J
+    // clear) renormalize upward, or shift into true subnormal form
+    // when the exponent bottoms out; pseudo-denormals (exponent 0,
+    // J set) become the exp=1 normal. Both rewrites preserve value —
+    // biased exponents 0 and 1 share the same weight.
+    constexpr int JPos = Layout::sig_bits - 1;
+    Storage sig = raw_sig;
+    int exp = static_cast<int>(raw_exp);
+    const bool jbit = (sig >> JPos) != 0;
+    if (exp > 0 && !jbit) {
+      int shift = JPos - detail::msbPos(sig);
+      if (exp > shift) {
+        exp -= shift;
+        sig <<= shift;
+      } else {
+        sig <<= (exp - 1);
+        exp = 0;
+      }
+    } else if (exp == 0 && jbit) {
+      exp = 1;
+    }
+    u.biased_exp = exp;
+    u.significand = sig;
   }
 
   return u;

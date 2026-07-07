@@ -56,6 +56,9 @@ template <typename T> struct GenericBinaryFpTest {
   static constexpr int StratK() {
     if constexpr (TotalBits <= 8) return 0; // exhaustive covers it
     if constexpr (TotalBits <= 16) return 8;
+    // 15-bit exponents mean ~32k binades; keep struct × strat pair
+    // counts in fast-suite territory.
+    if constexpr (T::layout::exp_bits >= 15) return 1;
     return 4;
   }
   static constexpr int RandomCount() {

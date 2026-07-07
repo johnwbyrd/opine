@@ -389,11 +389,7 @@ std::vector<typename T::storage_type> structuralValues() {
           ? (int(ExpMax) - 1)
           : int(ExpMax);
 
-  auto widthMask = []() -> Storage {
-    if constexpr (TotalBits < int(sizeof(Storage) * 8))
-      return (Storage{1} << TotalBits) - 1;
-    return Storage(~Storage{0});
-  };
+  auto widthMask = []() -> Storage { return maskLow<Storage>(TotalBits); };
 
   // Encoding-correct negation: sign-bit set for Explicit, whole-word
   // two's complement for RadixComplement, one's complement for DRC.
@@ -528,7 +524,10 @@ template <typename T, int K> struct ExponentStratifiedSingles {
     std::mt19937_64 Rng(Seed);
     for (int e = 0; e < ExpCount; ++e) {
       for (int k = 0; k < K; ++k) {
-        Storage sig = Storage(Rng()) & SigMask;
+        Storage sig = Storage(Rng());
+        if constexpr (Fmt::sig_bits > 64)
+          sig |= Storage(Rng()) << 64;
+        sig &= SigMask;
         Storage sign = (Rng() & 1u) ? SignBit : Storage{0};
         Callback(Storage(sign | (Storage(e) << Fmt::exp_offset) | sig));
       }

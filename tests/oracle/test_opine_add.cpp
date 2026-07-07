@@ -6,9 +6,10 @@
 // The strategy per Type is chosen by GenericBinaryFpTest based on
 // total_bits; adding a Type is one line in ALL_TYPES below.
 //
-// Not tested yet: extFloat80 (explicit-J-bit path in opine::add
-// hasn't been validated) and float128 (Wide=uint64 is too narrow
-// for the 113-bit significand). Both are follow-up work.
+// extFloat80 exercises the explicit-J-bit path, including the
+// non-canonical encodings (unnormals, pseudo-denormals,
+// pseudo-infinities) that unpack canonicalizes. float128 exercises
+// the 128-bit working type.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -23,7 +24,8 @@ TEST_CASE_TEMPLATE("add: OPINE vs MPFR", T,
                    fp8_e5m2, fp8_e4m3, fp8_e4m3fnuz, RbjType<5, 2>,
                    RbjType<4, 3>, FastType<5, 2>, FastType<4, 3>,
                    // FP16 and up (structural + stratified + random)
-                   bfloat16, float16, float32, float64) {
+                   bfloat16, float16, float32, float64, extFloat80,
+                   float128) {
   GenericBinaryFpTest<T>::run(Op::Add);
 }
 
