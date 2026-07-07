@@ -38,12 +38,19 @@
 
 namespace opine {
 
+namespace detail {
+
 // -----------------------------------------------------------------
-// add
+// addWithSign — shared pipeline for add and sub
 // -----------------------------------------------------------------
+// sub is add with b's sign flipped, but the flip must happen on the
+// UNPACKED value: a bit-level negate has no -0 encoding to land on
+// in fnuz formats (the sign-set zero pattern is their NaN), while
+// the unpacked form carries the sign out-of-band.
 template <typename T>
 constexpr typename T::storage_type
-add(typename T::storage_type a, typename T::storage_type b) {
+addWithSign(typename T::storage_type a, typename T::storage_type b,
+            bool negate_b) {
   using Fmt = typename T::layout;
   using Num = typename T::number;
   using Rnd = typename T::rounding;
@@ -85,6 +92,10 @@ add(typename T::storage_type a, typename T::storage_type b) {
     flush(ua);
     flush(ub);
   }
+
+  // Subtraction: negate the unpacked b. NaN carries no sign.
+  if (negate_b && ub.category != ValueCategory::NaN)
+    ub.sign = !ub.sign;
 
   // Small helper: pack a special-value category.
   auto packSpecial = [](ValueCategory c, bool sign) -> Storage {
@@ -263,6 +274,17 @@ add(typename T::storage_type a, typename T::storage_type b) {
   result.biased_exp = result_exp;
   result.significand = Storage(stored_sig);
   return pack<T>(result);
+}
+
+} // namespace detail
+
+// -----------------------------------------------------------------
+// add
+// -----------------------------------------------------------------
+template <typename T>
+constexpr typename T::storage_type
+add(typename T::storage_type a, typename T::storage_type b) {
+  return detail::addWithSign<T>(a, b, false);
 }
 
 } // namespace opine

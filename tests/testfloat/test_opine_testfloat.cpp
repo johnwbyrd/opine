@@ -8,7 +8,8 @@
 // propagates payloads — any-NaN-matches-any-NaN).
 //
 // Coverage: FP16 and FP32, all four supported rounding modes for
-// add and mul, plus the mode-independent comparisons (eq, lt, le).
+// add, sub, mul, and div, plus the mode-independent comparisons
+// (eq, lt, le).
 // Exception flags are not compared — OPINE doesn't implement them
 // yet (TDD step 12).
 
@@ -46,7 +47,9 @@ struct F16Gen {
   static SfType b() { return genCases_f16_b; }
   static uint64_t bits(SfType s) { return s.v; }
   static SfType add(SfType x, SfType y) { return f16_add(x, y); }
+  static SfType sub(SfType x, SfType y) { return f16_sub(x, y); }
   static SfType mul(SfType x, SfType y) { return f16_mul(x, y); }
+  static SfType div(SfType x, SfType y) { return f16_div(x, y); }
   static bool eq(SfType x, SfType y) { return f16_eq(x, y); }
   static bool lt(SfType x, SfType y) { return f16_lt_quiet(x, y); }
   static bool le(SfType x, SfType y) { return f16_le_quiet(x, y); }
@@ -63,7 +66,9 @@ struct F32Gen {
   static SfType b() { return genCases_f32_b; }
   static uint64_t bits(SfType s) { return s.v; }
   static SfType add(SfType x, SfType y) { return f32_add(x, y); }
+  static SfType sub(SfType x, SfType y) { return f32_sub(x, y); }
   static SfType mul(SfType x, SfType y) { return f32_mul(x, y); }
+  static SfType div(SfType x, SfType y) { return f32_div(x, y); }
   static bool eq(SfType x, SfType y) { return f32_eq(x, y); }
   static bool lt(SfType x, SfType y) { return f32_lt_quiet(x, y); }
   static bool le(SfType x, SfType y) { return f32_le_quiet(x, y); }
@@ -169,8 +174,12 @@ template <typename Gen, typename Rnd> void runArithSweep() {
   const char *rnd = roundingName<Rnd>();
   runBinary<Gen, T>("add", rnd, Gen::add,
                     [](Bits x, Bits y) { return opine::add<T>(x, y); });
+  runBinary<Gen, T>("sub", rnd, Gen::sub,
+                    [](Bits x, Bits y) { return opine::sub<T>(x, y); });
   runBinary<Gen, T>("mul", rnd, Gen::mul,
                     [](Bits x, Bits y) { return opine::mul<T>(x, y); });
+  runBinary<Gen, T>("div", rnd, Gen::div,
+                    [](Bits x, Bits y) { return opine::div<T>(x, y); });
 }
 
 template <typename Gen> void runCompareSweep() {
