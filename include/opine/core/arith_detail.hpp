@@ -69,6 +69,21 @@ template <typename Rnd> constexpr bool exactZeroSumSign() {
   return std::is_same_v<Rnd, rounding::TowardNegative>;
 }
 
+// IEEE 754 §7.4 overflow: whether an overflowed result becomes
+// infinity or saturates at the format's largest finite magnitude.
+// To-nearest modes carry to infinity; TowardZero never does; the
+// directed modes reach infinity only on their own side of zero.
+template <typename Rnd> constexpr bool overflowRoundsToInf(bool negative) {
+  if constexpr (std::is_same_v<Rnd, rounding::TowardZero>)
+    return false;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>)
+    return !negative;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>)
+    return negative;
+  else
+    return true;
+}
+
 } // namespace detail
 } // namespace opine
 

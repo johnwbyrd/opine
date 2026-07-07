@@ -67,6 +67,18 @@ using bits_t = typename detail::BitsStorage<N>::type;
 #error "Requires Clang (_BitInt) or GCC (__int128)"
 #endif
 
+// All-ones mask of the low `width` bits of Storage. Safe when width
+// equals Storage's full value width — where the naive
+// (Storage{1} << width) - 1 would shift by the type's width (UB; a
+// hard error for _BitInt in constant expressions). Note sizeof is no
+// substitute for value width: _BitInt(80) has sizeof 16 but 80 value
+// bits. The double shift wraps to zero at full width, giving the
+// correct all-ones result.
+template <typename Storage> constexpr Storage maskLow(int width) {
+  Storage top = Storage{1} << (width - 1);
+  return Storage(Storage(top << 1) - Storage{1});
+}
+
 } // namespace opine
 
 #endif // OPINE_CORE_BITS_HPP

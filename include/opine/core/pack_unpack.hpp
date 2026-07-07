@@ -16,6 +16,7 @@
 // This slice covers Explicit and RadixComplement value_sign only.
 // DiminishedRadixComplement (CDC 6600) is deferred.
 
+#include "opine/core/bits.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/number.hpp"
 
@@ -62,21 +63,13 @@ constexpr Storage extractField(Storage bits, int offset, int width) {
 // Negate the low TotalBits of a storage word (two's complement).
 template <typename Storage>
 constexpr Storage negateWord(Storage bits, int total_bits) {
-  if (total_bits < int(sizeof(Storage) * 8)) {
-    Storage mask = (Storage{1} << total_bits) - 1;
-    return ((~bits) + Storage{1}) & mask;
-  }
-  return (~bits) + Storage{1};
+  return Storage((~bits) + Storage{1}) & maskLow<Storage>(total_bits);
 }
 
 // Mask the low TotalBits of a storage word.
 template <typename Storage>
 constexpr Storage maskToWidth(Storage bits, int total_bits) {
-  if (total_bits < int(sizeof(Storage) * 8)) {
-    Storage mask = (Storage{1} << total_bits) - 1;
-    return bits & mask;
-  }
-  return bits;
+  return bits & maskLow<Storage>(total_bits);
 }
 
 } // namespace detail

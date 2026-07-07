@@ -26,3 +26,18 @@ TEST_CASE_TEMPLATE("add: OPINE vs MPFR", T,
                    bfloat16, float16, float32, float64) {
   GenericBinaryFpTest<T>::run(Op::Add);
 }
+
+// Encoding × rounding sweep (exhaustive FP8). The default-rounding
+// (ToNearestTiesToEven) combinations are covered above; FastType
+// covers Relaxed × TowardZero.
+TEST_CASE_TEMPLATE(
+    "add: OPINE vs MPFR, rounding sweep", T,
+    IeeeR<5, 2, rounding::TowardZero>, IeeeR<5, 2, rounding::TowardPositive>,
+    IeeeR<5, 2, rounding::TowardNegative>, IeeeR<4, 3, rounding::TowardZero>,
+    IeeeR<4, 3, rounding::TowardPositive>,
+    IeeeR<4, 3, rounding::TowardNegative>, FnuzR<rounding::TowardZero>,
+    FnuzR<rounding::TowardPositive>, FnuzR<rounding::TowardNegative>,
+    RbjR<5, 2, rounding::TowardZero>, RbjR<5, 2, rounding::TowardPositive>,
+    RbjR<5, 2, rounding::TowardNegative>) {
+  GenericBinaryFpTest<T>::run(Op::Add);
+}

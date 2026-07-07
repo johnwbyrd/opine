@@ -181,11 +181,13 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   }
 
   // ---------- Overflow ----------
+  // IEEE 754 §7.4: overflow becomes Inf only when the rounding mode
+  // carries the magnitude upward; otherwise saturate to max finite.
   if (result_exp > MaxBiasedExp) {
     if constexpr (Num::inf_encoding != InfEncoding::None) {
-      return packSpecial(ValueCategory::Infinity, result_sign);
+      if (detail::overflowRoundsToInf<Rnd>(result_sign))
+        return packSpecial(ValueCategory::Infinity, result_sign);
     }
-    // Saturate to max finite.
     result_exp = MaxBiasedExp;
     stored_sig = (Wide{1} << SigBits) - 1;
   }
@@ -203,14 +205,19 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   // ---------- IntegerExtremes overflow collision ----------
   // If the assembled positive-magnitude field pattern reaches the
   // +Inf bit pattern (0x7F…F), the "finite" result actually
-  // overflows.
+  // overflows: Inf when the rounding mode carries upward, else the
+  // largest finite pattern (one below +Inf).
   if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
     Storage tentative =
         (Storage(result_exp) << Fmt::exp_offset) |
         ((Storage(stored_sig) & SigStoredMask) << Fmt::sig_offset);
     constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
-    if (tentative >= PosInf)
-      return packSpecial(ValueCategory::Infinity, result_sign);
+    if (tentative >= PosInf) {
+      if (detail::overflowRoundsToInf<Rnd>(result_sign))
+        return packSpecial(ValueCategory::Infinity, result_sign);
+      result_exp = ExpMax;
+      stored_sig = (Wide{1} << SigBits) - 2;
+    }
   }
 
   // ---------- Assemble and pack ----------
