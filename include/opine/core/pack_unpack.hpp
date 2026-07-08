@@ -298,6 +298,10 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
       }
       return nan_bits;
     } else {
+      // NanEncoding::None: a NaN category is a caller precondition
+      // violation — the format cannot represent it. Callers route
+      // around this (e.g. Relaxed formats never produce NaN).
+      // Return +0 deterministically rather than UB.
       return Storage{0};
     }
   }
@@ -318,6 +322,11 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
         inf_bits |= Storage{1} << Layout::sign_offset;
       return inf_bits;
     } else {
+      // InfEncoding::None: an Infinity category is a caller
+      // precondition violation — the format cannot represent it.
+      // Callers that may face an Inf-into-no-Inf format must route
+      // through packInfOrSaturate (round_pack.hpp) instead. Return
+      // +0 deterministically rather than UB.
       return Storage{0};
     }
   }

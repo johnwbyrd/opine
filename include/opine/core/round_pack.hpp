@@ -37,6 +37,16 @@ namespace detail {
 // Working guard bits below the significand in a kernel's magnitude.
 inline constexpr int GuardBits = 3;
 
+// The largest biased exponent finite values may occupy. Formats
+// whose NaN or Inf encoding reserves the top exponent lose that
+// binade to specials.
+template <typename T>
+inline constexpr int max_biased_exp =
+    (T::number::nan_encoding == NanEncoding::ReservedExponent ||
+     T::number::inf_encoding == InfEncoding::ReservedExponent)
+        ? ((1 << T::layout::exp_bits) - 1) - 1
+        : ((1 << T::layout::exp_bits) - 1);
+
 // -----------------------------------------------------------------
 // Prologue
 // -----------------------------------------------------------------
@@ -84,16 +94,10 @@ constexpr typename T::storage_type packSpecial(ValueCategory c, bool sign) {
 // The format's largest finite magnitude with the given sign.
 template <typename T>
 constexpr typename T::storage_type packMaxFinite(bool sign) {
-  using Fmt = typename T::layout;
   using Num = typename T::number;
   using Storage = typename T::storage_type;
   constexpr int SigBits = Num::significand::digit_count;
-  constexpr int ExpMax = (1 << Fmt::exp_bits) - 1;
-  constexpr int MaxBiasedExp =
-      (Num::nan_encoding == NanEncoding::ReservedExponent ||
-       Num::inf_encoding == InfEncoding::ReservedExponent)
-          ? (ExpMax - 1)
-          : ExpMax;
+  constexpr int MaxBiasedExp = max_biased_exp<T>;
   UnpackedFloat<Storage> u{};
   u.category = ValueCategory::Finite;
   u.sign = sign;
@@ -139,11 +143,7 @@ roundAndPack(bool result_sign, int result_exp, Wide magnitude) {
 
   constexpr int SigBits = Num::significand::digit_count;
   constexpr int ExpMax = (1 << Fmt::exp_bits) - 1;
-  constexpr int MaxBiasedExp =
-      (Num::nan_encoding == NanEncoding::ReservedExponent ||
-       Num::inf_encoding == InfEncoding::ReservedExponent)
-          ? (ExpMax - 1)
-          : ExpMax;
+  constexpr int MaxBiasedExp = max_biased_exp<T>;
   constexpr int GBits = GuardBits;
   constexpr int TotalBits = Fmt::total_bits;
   constexpr Storage SigStoredMask = (Storage{1} << Fmt::sig_bits) - 1;
