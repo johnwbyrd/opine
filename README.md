@@ -50,6 +50,18 @@ auto sum  = add<f32>(a, b);
 auto prod = mul<f32>(a, b);
 auto quot = div<f32>(a, b);
 bool less = lt<f32>(a, b);
+
+// Conversion spells BOTH Types at the call site, destination first
+// (reads like a cast). The source can't be deduced from the argument:
+// distinct Types share a storage width — fp8_e5m2 and fp8_e4m3 are
+// both 8 bits. Rounding is the destination's Rounding axis.
+auto h    = convert<f32, fp8>(a);         // FP8 → binary32, exact
+auto back = convert<fp8, f32>(sum);       // binary32 → FP8, rounds
+
+// Native bridges (bit_cast + convert) are the intended way to get
+// values in and out.
+auto third = fromNative<fp8>(1.0f / 3.0f);  // 0x2B: 0.34375
+float f    = toFloat<fp8>(third);
 ```
 
 ## Axes
@@ -94,6 +106,7 @@ the identification decision tree is in
 | sub           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | mul           | ✓ exhaustive | ✓ | ✓ | — |
 | div           | ✓ exhaustive | ✓ | — | — |
+| convert       | ✓ exhaustive (all 49 encoding pairs) | ✓ | ✓ sampled | ✓ sampled |
 
 "Exhaustive" at FP8 means all 65,536 input pairs cross-checked against
 the MPFR oracle for every encoding. Wider formats run structural +
@@ -104,9 +117,21 @@ adding a new format or op is one line each. `mul_supported<T>` and
 extFloat80 division and float128 mul/div need a multi-word scheme
 (follow-up).
 
-**Not implemented:** format conversion (step 11), exception flags (step
-12), elementary functions, and the Box axis. `DiminishedRadixComplement`
-value_sign (CDC 6600) parses but has no arithmetic pipeline yet.
+`convert<Dst, Src>` works between **any** two supported Types — every
+width pair fits the 128-bit working type, so the table has no gaps.
+NaN converts to the destination's canonical quiet NaN (payloads are
+not propagated); Inf into a format with no Inf encoding saturates to
+max finite; −0 into a format without −0 is +0. Where
+`exact_conversion<Src, Dst>` holds (e.g. every FP8 → FP16, FP16 →
+FP32, bfloat16 → FP32, extFloat80 → float128), round-tripping is the
+identity on every non-NaN bit pattern — verified exhaustively.
+Chained conversions may double-round versus a direct one; convert
+directly.
+
+**Not implemented:** exception flags (step 12), float↔integer and
+string conversion, elementary functions, and the Box axis.
+`DiminishedRadixComplement` value_sign (CDC 6600) parses but has no
+arithmetic pipeline yet.
 
 **Encodings supported end-to-end:** Explicit + ReservedExponent (IEEE
 754), Explicit + NegativeZeroBitPattern (E4M3FNUZ), Explicit + None
@@ -190,9 +215,11 @@ include/opine/          — Header-only library
     bits.hpp            — bits_t<N> + width-safe maskLow
     compute_format.hpp  — Operation-level precision parameter
     pack_unpack.hpp     — bits ↔ canonical UnpackedFloat
+    round_pack.hpp      — Shared pipeline: prologue + roundAndPack epilogue
     compare.hpp         — eq / lt / le
     neg_abs.hpp         — neg / abs
     add.hpp / sub.hpp / mul.hpp / div.hpp
+    convert.hpp         — convert<Dst, Src> + native float/double bridges
     arith_detail.hpp    — Shared G/R/S + overflow-mode helpers
 tests/
   oracle/               — MPFR + SoftFloat cross-validation

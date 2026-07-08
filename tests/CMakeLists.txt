@@ -82,6 +82,13 @@ if(OPINE_HAS_ORACLE)
     target_link_libraries(test_opine_div PRIVATE opine MPFR::MPFR doctest_with_main)
     target_include_directories(test_opine_div PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_div COMMAND test_opine_div)
+
+    # OPINE convert vs MPFR oracle (exhaustive FP8 pairs + sampled
+    # wide formats + round-trip theorems)
+    add_executable(test_opine_convert oracle/test_opine_convert.cpp)
+    target_link_libraries(test_opine_convert PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_convert PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_convert COMMAND test_opine_convert)
 endif()
 
 # TestFloat conformance shim (TDD step 5): OPINE vs SoftFloat over

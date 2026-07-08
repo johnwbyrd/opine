@@ -5,6 +5,7 @@
 #include "opine/core/bits.hpp"
 #include "opine/core/compare.hpp"
 #include "opine/core/compute_format.hpp"
+#include "opine/core/convert.hpp"
 #include "opine/core/div.hpp"
 #include "opine/core/exceptions.hpp"
 #include "opine/core/layout.hpp"
