@@ -109,20 +109,6 @@ inline constexpr bool exact_conversion =
 // -----------------------------------------------------------------
 // convert
 // -----------------------------------------------------------------
-// The working type must hold the wider of the source significand
-// and Dst's significand-plus-guard form. Every pair of currently
-// supported formats fits in 128 bits (worst case: float128's
-// 113-bit significand). Callers that dispatch generically can
-// check this instead of tripping the static_assert.
-template <typename Dst, typename Src>
-inline constexpr bool convert_supported =
-    (Src::number::significand::digit_count >
-             Dst::number::significand::digit_count + detail::GuardBits
-         ? Src::number::significand::digit_count
-         : Dst::number::significand::digit_count + detail::GuardBits) +
-        1 <=
-    128;
-
 template <typename Dst, typename Src>
 constexpr typename Dst::storage_type
 convert(typename Src::storage_type bits) {
@@ -136,11 +122,13 @@ convert(typename Src::storage_type bits) {
   constexpr int DstBias = DstNum::exponent_bias;
   constexpr int GBits = detail::GuardBits;
 
-  static_assert(convert_supported<Dst, Src>,
-                "convert's working type tops out at 128 bits");
+  // The working geometry holds the wider of the source significand
+  // and Dst's significand-plus-guard form. No width ceiling: wider
+  // pairs just take more limbs (of Dst's Platform word — the
+  // conversion runs in the destination's pipeline).
   constexpr int NeedBits =
       (SrcSigBits > DstSigBits + GBits ? SrcSigBits : DstSigBits + GBits) + 1;
-  using Wide = bits_t<(NeedBits > 64) ? 128 : 64>;
+  using DV = detail::WorkingDigits<Dst, NeedBits>;
 
   UnpackedFloat<SrcStorage> u = detail::unpackOperand<Src>(bits);
 
@@ -161,8 +149,9 @@ convert(typename Src::storage_type bits) {
   // position lower (denormals) is one binade lower.
   const int e = (u.biased_exp == 0) ? 1 : u.biased_exp;
 
-  Wide magnitude = Wide(u.significand);
-  const int cur_msb = detail::msbPos(magnitude);
+  DV magnitude = detail::digitsFromStorage<typename DV::limb_type,
+                                           DV::limb_count>(u.significand);
+  const int cur_msb = detail::topBitPos(magnitude);
   const int unbiased = (e - SrcBias) + (cur_msb - (SrcSigBits - 1));
 
   // Rebase onto Dst's exponent scale and place the MSB at Dst's
@@ -171,9 +160,9 @@ convert(typename Src::storage_type bits) {
   const int result_exp = unbiased + DstBias;
   const int target_msb = DstSigBits + GBits - 1;
   if (cur_msb > target_msb)
-    magnitude = detail::shiftRightSticky(magnitude, cur_msb - target_msb);
+    magnitude = detail::shiftRightStickyDigits(magnitude, cur_msb - target_msb);
   else if (cur_msb < target_msb)
-    magnitude <<= (target_msb - cur_msb);
+    magnitude = detail::shiftLeftDigits(magnitude, target_msb - cur_msb);
 
   return detail::roundAndPack<Dst>(u.sign, result_exp, magnitude);
 }

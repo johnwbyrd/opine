@@ -47,10 +47,11 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
   constexpr int SigBits = Num::significand::digit_count;
   constexpr int GBits = GuardBits;
 
-  // The working type holds the widened significand plus guard bits
-  // and one carry bit. Power-of-two widths keep shiftRightSticky's
-  // sizeof-based full-shift guard exact.
-  using Wide = bits_t<(SigBits + GBits + 1 > 64) ? 128 : 64>;
+  // The working geometry holds the widened significand plus guard
+  // bits and one carry bit. No width ceiling: wider formats just
+  // take more limbs.
+  using DV = WorkingDigits<T, SigBits + GBits + 1>;
+  using Limb = typename DV::limb_type;
 
   UnpackedFloat<Storage> ua = unpackOperand<T>(a);
   UnpackedFloat<Storage> ub = unpackOperand<T>(b);
@@ -107,34 +108,36 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
     eb = et;
   }
 
-  Wide sa = Wide(ua.significand) << GBits;
-  Wide sb = Wide(ub.significand) << GBits;
-  sb = detail::shiftRightSticky(sb, ea - eb);
+  DV sa = shiftLeftDigits(
+      digitsFromStorage<Limb, DV::limb_count>(ua.significand), GBits);
+  DV sb = shiftLeftDigits(
+      digitsFromStorage<Limb, DV::limb_count>(ub.significand), GBits);
+  sb = shiftRightStickyDigits(sb, ea - eb);
 
   bool result_sign = ua.sign;
-  Wide magnitude;
+  DV magnitude;
   if (ua.sign == ub.sign) {
-    magnitude = sa + sb;
+    magnitude = addDigits(sa, sb);
   } else {
-    magnitude = sa - sb;
-    if (magnitude == 0)
+    magnitude = subDigits(sa, sb);
+    if (isZero(magnitude))
       return packSpecial<T>(ValueCategory::Zero,
                             detail::exactZeroSumSign<Rnd>());
   }
 
   int result_exp = ea;
   const int target_msb = SigBits + GBits - 1;
-  int cur_msb = detail::msbPos(magnitude);
+  int cur_msb = topBitPos(magnitude);
 
   if (cur_msb > target_msb) {
     // Carry from add: right-shift with sticky.
     int rs = cur_msb - target_msb;
-    magnitude = detail::shiftRightSticky(magnitude, rs);
+    magnitude = shiftRightStickyDigits(magnitude, rs);
     result_exp += rs;
   } else if (cur_msb < target_msb) {
     // Cancellation from subtract: left-shift, exp goes down.
     int ls = target_msb - cur_msb;
-    magnitude <<= ls;
+    magnitude = shiftLeftDigits(magnitude, ls);
     result_exp -= ls;
   }
 

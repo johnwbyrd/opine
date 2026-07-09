@@ -91,9 +91,10 @@ scalar today.
   `Trap`. The type-system machinery exists; the runtime plumbing lands
   in TDD step 12.
 - **Platform** — identity + structural parameters (`machine_word_bits`,
-  `type_policy`). Hardware capabilities are declared as booleans today
-  and will migrate to template specializations when specialized backends
-  land.
+  `type_policy`). `machine_word_bits` selects the compute limb for the
+  digit geometry (the default `Generic32` computes in 32-bit limbs).
+  Hardware capabilities are declared as booleans today and will migrate
+  to template specializations when specialized backends land.
 
 Full architecture is in [`docs/design/design.md`](docs/design/design.md);
 the format catalog is in [`docs/design/catalog.md`](docs/design/catalog.md);
@@ -109,21 +110,27 @@ the identification decision tree is in
 | neg / abs     | ✓ exhaustive | ✓ | ✓ | ✓ |
 | add           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | sub           | ✓ exhaustive | ✓ | ✓ | ✓ |
-| mul           | ✓ exhaustive | ✓ | ✓ | — |
-| div           | ✓ exhaustive | ✓ | — | — |
+| mul           | ✓ exhaustive | ✓ | ✓ | ✓ |
+| div           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | convert       | ✓ exhaustive (all 49 encoding pairs) | ✓ | ✓ sampled | ✓ sampled |
 
 "Exhaustive" at FP8 means all 65,536 input pairs cross-checked against
 the MPFR oracle for every encoding. Wider formats run structural +
 per-binade stratified + random against the oracle via
 [`GenericBinaryFpTest<T>`](tests/harness/generic_binary_test.hpp);
-adding a new format or op is one line each. `mul_supported<T>` and
-`div_supported<T>` gate the 128-bit working-type limit at compile time —
-extFloat80 division and float128 mul/div need a multi-word scheme
-(follow-up).
+adding a new format or op is one line each.
 
-`convert<Dst, Src>` works between **any** two supported Types — every
-width pair fits the 128-bit working type, so the table has no gaps.
+There is **no width ceiling**: every operation computes in the digit
+geometry of [`digits.hpp`](include/opine/core/digits.hpp) — a
+`DigitVector` of machine-word limbs sized to the operation (float128's
+226-bit exact product is eight 32-bit limbs on the default platform),
+on both compilers, with no dependence on `__int128` or `_BitInt` in
+the arithmetic path. The same geometry is what will carry binary256+
+formats and, eventually, non-binary compute radixes; the digit
+primitives are differentially verified against `_BitInt` at 40–2048
+bits and exhaustively at small widths.
+
+`convert<Dst, Src>` works between **any** two supported Types.
 NaN converts to the destination's canonical quiet NaN (payloads are
 not propagated); Inf into a format with no Inf encoding saturates to
 max finite; −0 into a format without −0 is +0. Where
@@ -220,6 +227,7 @@ include/opine/          — Header-only library
     bits.hpp            — bits_t<N> + width-safe maskLow
     compute_format.hpp  — Operation-level precision parameter
     pack_unpack.hpp     — bits ↔ canonical UnpackedFloat
+    digits.hpp          — DigitVector: compute-side digit geometry (limbs)
     round_pack.hpp      — Shared pipeline: prologue + roundAndPack epilogue
     compare.hpp         — eq / lt / le
     neg_abs.hpp         — neg / abs

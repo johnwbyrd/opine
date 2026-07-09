@@ -11,9 +11,9 @@
 //      finite → Zero. The result sign is always sign_a XOR sign_b.
 //   3. Finite × Finite:
 //      a. Compute effective biased exponents (denormals → 1).
-//      b. Multiply the semantic significands in a working type wide
-//         enough for the full 2×SigBits product — no information is
-//         lost before rounding.
+//      b. Multiply the semantic significands as digit vectors —
+//         mulDigits produces the exact double-length product, so no
+//         information is lost before rounding at any width.
 //      c. Derive the result exponent from the operand exponents and
 //         the product's MSB position, then normalize the product so
 //         its MSB sits at the SigBits + GuardBits - 1 working
@@ -22,21 +22,16 @@
 //   4. roundAndPack does the rest: subnormal shift, G/R/S
 //      rounding, overflow, denormal flush, IntegerExtremes
 //      collision, pack.
+//
+// There is no width ceiling: the working geometry is however many
+// limbs the exact product needs (float128's 226-bit product is
+// eight 32-bit limbs on the default platform).
 
 #include "opine/core/arith_detail.hpp"
-#include "opine/core/bits.hpp"
+#include "opine/core/digits.hpp"
 #include "opine/core/round_pack.hpp"
 
 namespace opine {
-
-// mul's working type tops out at 128 bits, so the exact significand
-// product must fit: float128 (2×113 = 226 bits) needs a multi-word
-// scheme — follow-up work. Callers that dispatch generically (e.g.
-// the test adapter) can check this instead of tripping the
-// static_assert.
-template <typename T>
-inline constexpr bool mul_supported =
-    2 * T::number::significand::digit_count <= 128;
 
 // -----------------------------------------------------------------
 // mul
@@ -51,13 +46,16 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   constexpr int Bias = Num::exponent_bias;
   constexpr int GBits = detail::GuardBits;
 
-  // The working type must hold the exact 2×SigBits-bit product and
-  // the (SigBits + GBits)-bit normalized form. Use a power-of-two
-  // width so shiftRightSticky's sizeof-based full-shift guard is
-  // exact.
-  static_assert(mul_supported<T>,
-                "mul's working type tops out at 128 bits");
-  using Wide = bits_t<(2 * SigBits + GBits > 64) ? 128 : 64>;
+  // Operands as digit vectors sized for one significand; the exact
+  // product is their double-length mulDigits result. The working
+  // width also covers the SigBits + GBits normalized form (the
+  // product of two significands is at least 2·(SigBits−1) bits
+  // wide, and SigBits ≥ GBits for every real format).
+  using SigDV = detail::WorkingDigits<T, SigBits>;
+  using DV = detail::DigitVector<typename SigDV::limb_type,
+                                 2 * SigDV::limb_count>;
+  static_assert(DV::total_bits >= SigBits + GBits + 1,
+                "product geometry cannot hold the normalized form");
 
   UnpackedFloat<Storage> ua = detail::unpackOperand<T>(a);
   UnpackedFloat<Storage> ub = detail::unpackOperand<T>(b);
@@ -91,17 +89,23 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   // scales as sig / 2^(SigBits-1), so a product whose MSB lands at
   // bit 2·(SigBits-1) corresponds to result exponent ea + eb − Bias;
   // every MSB position off that reference shifts the exponent by one.
-  Wide magnitude = Wide(ua.significand) * Wide(ub.significand);
-  int cur_msb = detail::msbPos(magnitude);
+  const auto sig_a = detail::digitsFromStorage<typename SigDV::limb_type,
+                                               SigDV::limb_count>(
+      ua.significand);
+  const auto sig_b = detail::digitsFromStorage<typename SigDV::limb_type,
+                                               SigDV::limb_count>(
+      ub.significand);
+  DV magnitude = detail::mulDigits(sig_a, sig_b);
+  int cur_msb = detail::topBitPos(magnitude);
   int result_exp = ea + eb - Bias + (cur_msb - 2 * (SigBits - 1));
 
   // Normalize the product so its MSB sits at the working position.
   const int target_msb = SigBits + GBits - 1;
   if (cur_msb > target_msb) {
-    magnitude = detail::shiftRightSticky(magnitude, cur_msb - target_msb);
+    magnitude = detail::shiftRightStickyDigits(magnitude, cur_msb - target_msb);
   } else if (cur_msb < target_msb) {
     // Denormal operand(s): the product is short. Exact left shift.
-    magnitude <<= (target_msb - cur_msb);
+    magnitude = detail::shiftLeftDigits(magnitude, target_msb - cur_msb);
   }
 
   return detail::roundAndPack<T>(result_sign, result_exp, magnitude);

@@ -1,10 +1,11 @@
 // Generic OPINE vs MPFR sweep for opine::div across every Type
-// currently in the codebase — from FP8 (exhaustive) through FP64
-// (structural + stratified + random).
+// currently in the codebase — from FP8 (exhaustive) through
+// float128 (structural + stratified + random).
 //
-// Not tested yet: extFloat80 and float128 — div's numerator
-// (significand shifted up by SigBits + 3) exceeds the 128-bit
-// working type (static_assert'd via div_supported). Follow-up work.
+// extFloat80's 131-bit and float128's 229-bit numerators run in
+// the multi-limb digit geometry (digits.hpp) — there is no width
+// ceiling. Division is the restoring bit-serial tier: slow and
+// obviously correct.
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include <doctest/doctest.h>
@@ -19,7 +20,8 @@ TEST_CASE_TEMPLATE("div: OPINE vs MPFR", T,
                    fp8_e5m2, fp8_e4m3, fp8_e4m3fnuz, RbjType<5, 2>,
                    RbjType<4, 3>, FastType<5, 2>, FastType<4, 3>,
                    // FP16 and up (structural + stratified + random)
-                   bfloat16, float16, float32, float64) {
+                   bfloat16, float16, float32, float64, extFloat80,
+                   float128) {
   GenericBinaryFpTest<T>::run(Op::Div);
 }
 

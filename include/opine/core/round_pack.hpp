@@ -263,19 +263,6 @@ roundAndPack(bool result_sign, int result_exp,
   return pack<T>(result);
 }
 
-// Transitional scalar entry (multi-limb step B): kernels that still
-// hand over a scalar working word get it chunked into the
-// Platform's digit geometry. Disappears when the kernels move onto
-// DigitVector themselves.
-template <typename T, typename Wide>
-constexpr typename T::storage_type
-roundAndPack(bool result_sign, int result_exp, Wide magnitude) {
-  using DV = WorkingDigits<T, int(sizeof(Wide)) * 8>;
-  return roundAndPack<T>(
-      result_sign, result_exp,
-      digitsFromStorage<typename DV::limb_type, DV::limb_count>(magnitude));
-}
-
 } // namespace detail
 } // namespace opine
 
