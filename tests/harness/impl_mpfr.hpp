@@ -407,17 +407,6 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   using Rnd = typename FloatType::rounding;
   using BitsType = typename FloatType::storage_type;
 
-  // The Rounding policies supported by the oracle so far. ToOdd
-  // and ToNearestTiesAway don't have direct MPFR analogs and are
-  // not yet needed; extending is a matter of custom post-rint
-  // adjustment.
-  static_assert(std::is_same_v<Rnd, rounding::TowardZero> ||
-                    std::is_same_v<Rnd, rounding::ToNearestTiesToEven> ||
-                    std::is_same_v<Rnd, rounding::TowardPositive> ||
-                    std::is_same_v<Rnd, rounding::TowardNegative>,
-                "mpfrRoundToFormat only supports TowardZero, "
-                "ToNearestTiesToEven, TowardPositive, TowardNegative");
-
   // -- Compile-time constants derived from Number and Layout -----
   constexpr int TotalBits = Fmt::total_bits;
   constexpr int MantBits = Fmt::sig_bits;
@@ -598,18 +587,34 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     return MPFR_RNDN;
   };
 
-  // Multiply |Val| by 2^shift, round to nearest integer with the
-  // given mode, return as an unsigned bitfield. Callers pick shift
-  // to place the rounded integer at the desired precision, and
-  // mode via AbsRoundingMode(sign_of_Val).
+  // Multiply |Val| by 2^shift, round to integer with the Type's
+  // rounding, return as an unsigned bitfield. Callers pick shift to
+  // place the rounded integer at the desired precision, and mode
+  // via AbsRoundingMode(sign_of_Val). Two modes have no mpfr_rnd_t
+  // spelling and are handled directly: ties-away is mpfr_round
+  // (which rounds halfway cases away from zero — up, on |Val|),
+  // and round-to-odd truncates then forces an inexact result's low
+  // bit to 1 (both are sign-symmetric on the magnitude).
   auto RoundToInteger = [&](int shift, mpfr_rnd_t mode) -> BitsType {
     MpfrFloat Scaled{oraclePrecision<FloatType>};
     mpfr_abs(Scaled, Val, MPFR_RNDN);
     mpfr_mul_2si(Scaled, Scaled, shift, MPFR_RNDN);
-    mpfr_rint(Scaled, Scaled, mode);
+    bool ForceOdd = false;
+    if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesAway>) {
+      mpfr_round(Scaled, Scaled);
+    } else if constexpr (std::is_same_v<Rnd, rounding::ToOdd>) {
+      MpfrFloat Trunc{oraclePrecision<FloatType>};
+      mpfr_rint(Trunc, Scaled, MPFR_RNDZ);
+      ForceOdd = mpfr_equal_p(Trunc, Scaled) == 0;
+      mpfr_set(Scaled, Trunc, MPFR_RNDN);
+    } else {
+      mpfr_rint(Scaled, Scaled, mode);
+    }
     mpz_t Z;
     mpz_init(Z);
     mpfr_get_z(Z, Scaled, MPFR_RNDN);
+    if (ForceOdd && mpz_even_p(Z))
+      mpz_add_ui(Z, Z, 1); // cannot carry: the low bit was 0
     BitsType r = detail::mpzToBits<BitsType>(Z);
     mpz_clear(Z);
     return r;
@@ -747,6 +752,47 @@ template <typename Rnd> constexpr mpfr_rnd_t mpfrSignedMode() {
   return MPFR_RNDN;
 }
 
+// round_p(exact): reduce Y (holding the exact value) to precision P
+// with unbounded exponent range in the Type's rounding mode. For
+// the four MPFR-native modes this is mpfr_prec_round; ties-away and
+// round-to-odd (no mpfr_rnd_t spelling) go through the same
+// scale-to-integer trick as mpfrRoundToFormat, on |value| (both are
+// sign-symmetric on the magnitude).
+template <typename FloatType> void mpfrRoundToPrecision(MpfrFloat &Y) {
+  using Rnd = typename FloatType::rounding;
+  constexpr int P = FloatType::number::significand::digit_count;
+  if (mpfr_nan_p(Y))
+    return; // scale-to-integer below would misbehave; NaN stays NaN
+  if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesAway> ||
+                std::is_same_v<Rnd, rounding::ToOdd>) {
+    const bool Neg = mpfr_signbit(Y) != 0;
+    const long Shift = long(P) - long(mpfr_get_exp(Y));
+    mpfr_abs(Y, Y, MPFR_RNDN);
+    mpfr_mul_2si(Y, Y, Shift, MPFR_RNDN);
+    if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesAway>) {
+      mpfr_round(Y, Y);
+    } else {
+      MpfrFloat Trunc{mpfr_get_prec(Y)};
+      mpfr_rint(Trunc, Y, MPFR_RNDZ);
+      if (!mpfr_equal_p(Trunc, Y)) {
+        mpz_t Z;
+        mpz_init(Z);
+        mpfr_get_z(Z, Trunc, MPFR_RNDN);
+        if (mpz_even_p(Z))
+          mpz_add_ui(Z, Z, 1);
+        mpfr_set_z(Trunc, Z, MPFR_RNDN);
+        mpz_clear(Z);
+      }
+      mpfr_set(Y, Trunc, MPFR_RNDN);
+    }
+    mpfr_mul_2si(Y, Y, -Shift, MPFR_RNDN);
+    if (Neg)
+      mpfr_neg(Y, Y, MPFR_RNDN);
+  } else {
+    mpfr_prec_round(Y, mpfr_prec_t(P), mpfrSignedMode<Rnd>());
+  }
+}
+
 template <typename FloatType>
 uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
                   const MpfrFloat &Exact,
@@ -800,11 +846,9 @@ uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
   if (!Exact.isInf() && !Exact.isZero()) {
     // round_p(exact): the format's precision, unbounded exponent
     // range, the Type's signed rounding mode.
-    constexpr int P = Num::significand::digit_count;
     MpfrFloat Y{oraclePrecision<FloatType>};
     mpfr_set(Y, Exact, MPFR_RNDN); // exact copy (same precision)
-    mpfr_prec_round(Y, mpfr_prec_t(P),
-                    mpfrSignedMode<typename FloatType::rounding>());
+    mpfrRoundToPrecision<FloatType>(Y);
 
     // Largest finite value, decoded from its bit pattern.
     // packMaxFinite is IntegerExtremes-aware (the all-ones pattern

@@ -42,17 +42,16 @@ template <typename Wide> constexpr int msbPos(Wide value) {
 }
 
 // Decide whether to round the pre-rounding integer significand up.
-// ToNearestTiesAway and ToOdd are declared in rounding.hpp but not
-// wired through here or the oracle yet — reject them rather than
-// silently truncate.
 template <typename Rnd>
 constexpr bool shouldRoundUp(bool lsb, bool guard, bool round_bit, bool sticky,
                              bool negative) {
   static_assert(std::is_same_v<Rnd, rounding::TowardZero> ||
                     std::is_same_v<Rnd, rounding::ToNearestTiesToEven> ||
+                    std::is_same_v<Rnd, rounding::ToNearestTiesAway> ||
                     std::is_same_v<Rnd, rounding::TowardPositive> ||
-                    std::is_same_v<Rnd, rounding::TowardNegative>,
-                "this Rounding policy is declared but not yet implemented");
+                    std::is_same_v<Rnd, rounding::TowardNegative> ||
+                    std::is_same_v<Rnd, rounding::ToOdd>,
+                "unknown Rounding policy");
   const bool any_low = guard || round_bit || sticky;
   if constexpr (std::is_same_v<Rnd, rounding::TowardZero>) {
     return false;
@@ -62,10 +61,18 @@ constexpr bool shouldRoundUp(bool lsb, bool guard, bool round_bit, bool sticky,
     if (round_bit || sticky)
       return true;
     return lsb; // exact tie → to even
+  } else if constexpr (std::is_same_v<Rnd, rounding::ToNearestTiesAway>) {
+    // Fraction ≥ half rounds the magnitude up; the tie needs no
+    // tiebreak bits because "away" IS up here (we round |value|).
+    return guard;
   } else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>) {
     return any_low && !negative;
   } else if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>) {
     return any_low && negative;
+  } else if constexpr (std::is_same_v<Rnd, rounding::ToOdd>) {
+    // Jam: an inexact result forces the low bit to 1. Incrementing
+    // an even lsb cannot carry, so this is exactly "set bit 0".
+    return any_low && !lsb;
   }
   return false;
 }
@@ -81,8 +88,11 @@ template <typename Rnd> constexpr bool exactZeroSumSign() {
 // infinity or saturates at the format's largest finite magnitude.
 // To-nearest modes carry to infinity; TowardZero never does; the
 // directed modes reach infinity only on their own side of zero.
+// ToOdd never increases magnitude past truncation, so it saturates
+// like TowardZero.
 template <typename Rnd> constexpr bool overflowRoundsToInf(bool negative) {
-  if constexpr (std::is_same_v<Rnd, rounding::TowardZero>)
+  if constexpr (std::is_same_v<Rnd, rounding::TowardZero> ||
+                std::is_same_v<Rnd, rounding::ToOdd>)
     return false;
   else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>)
     return !negative;

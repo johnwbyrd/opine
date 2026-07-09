@@ -36,6 +36,14 @@ TEST_CASE_TEMPLATE(
     IeeeR<4, 3, rounding::TowardNegative>, FnuzR<rounding::TowardZero>,
     FnuzR<rounding::TowardPositive>, FnuzR<rounding::TowardNegative>,
     RbjR<5, 2, rounding::TowardZero>, RbjR<5, 2, rounding::TowardPositive>,
-    RbjR<5, 2, rounding::TowardNegative>) {
+    RbjR<5, 2, rounding::TowardNegative>,
+    // The modes with no direct MPFR analog: to-nearest-ties-away
+    // and round-to-odd (jamming), across the encoding families.
+    IeeeR<5, 2, rounding::ToNearestTiesAway>,
+    IeeeR<4, 3, rounding::ToNearestTiesAway>,
+    FnuzR<rounding::ToNearestTiesAway>,
+    RbjR<5, 2, rounding::ToNearestTiesAway>, IeeeR<5, 2, rounding::ToOdd>,
+    IeeeR<4, 3, rounding::ToOdd>, FnuzR<rounding::ToOdd>,
+    RbjR<5, 2, rounding::ToOdd>) {
   GenericBinaryFpTest<T>::run(Op::Sub);
 }

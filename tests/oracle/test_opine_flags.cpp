@@ -67,7 +67,9 @@ TEST_CASE_TEMPLATE("flags: OPINE vs MPFR (exhaustive FP8)", T, IeeeS<5, 2>,
                    IeeeS<4, 3>, FnuzS, RbjS<5, 2>, RbjS<4, 3>, FastS<5, 2>,
                    FastS<4, 3>, IeeeS<4, 3, rounding::TowardZero>,
                    IeeeS<4, 3, rounding::TowardPositive>,
-                   IeeeS<4, 3, rounding::TowardNegative>) {
+                   IeeeS<4, 3, rounding::TowardNegative>,
+                   IeeeS<4, 3, rounding::ToNearestTiesAway>,
+                   IeeeS<4, 3, rounding::ToOdd>) {
   verifyFlags<T>();
 }
 

@@ -161,8 +161,9 @@ scalar today.
   field offsets and `implicit_digit`. DPD / BID / posit-regime / variable
   layouts are in the design space, not the code.
 - **Rounding** — `TowardZero`, `ToNearestTiesToEven` (default),
-  `TowardPositive`, `TowardNegative`. `ToNearestTiesAway` and `ToOdd` are
-  declared, not yet wired through the oracle.
+  `TowardPositive`, `TowardNegative`, `ToNearestTiesAway`, and `ToOdd`
+  (von Neumann jamming — the double-rounding-safe intermediate mode),
+  all verified against the oracle.
 - **Exceptions** — `Silent` (default), `StatusFlags` (sticky
   per-thread accumulation, `statusFlags()` / `clearStatusFlags()`), and
   `ReturnStatus` (every rounding op returns `{bits, flags}`) are live:
