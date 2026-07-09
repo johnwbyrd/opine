@@ -110,6 +110,13 @@ if(OPINE_HAS_ORACLE)
     target_include_directories(test_opine_string PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_string COMMAND test_opine_string)
 
+    # Square root across all Types (FP8 exhaustive incl. rounding
+    # sweep, wider sampled, flags spot checks)
+    add_executable(test_opine_sqrt oracle/test_opine_sqrt.cpp)
+    target_link_libraries(test_opine_sqrt PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_sqrt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_sqrt COMMAND test_opine_sqrt)
+
     # §5 operations: remaining predicates, classification, min/max
     # family, nextUp/nextDown, copySign (exhaustive FP8 + f64 libm)
     add_executable(test_opine_ops oracle/test_opine_ops.cpp)

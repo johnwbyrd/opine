@@ -924,16 +924,11 @@ template <typename FloatType> struct MpfrAdapter {
     // before the sign transform, or the transform would smear the
     // NaN into a finite value.
     constexpr int TotalBits = Fmt::total_bits;
-    constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
-
-    auto MaskWidth = [](BitsType b) -> BitsType {
-      return b & opine::maskLow<BitsType>(TotalBits);
-    };
+    const BitsType SignBit = opine::detail::wordBit<BitsType>(Fmt::sign_offset);
 
     auto IsNanBitPattern = [&](BitsType b) -> bool {
       if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
-        constexpr BitsType Trap = BitsType{1} << (TotalBits - 1);
-        return b == Trap;
+        return b == opine::detail::wordBit<BitsType>(TotalBits - 1);
       } else if constexpr (Num::nan_encoding ==
                            NanEncoding::NegativeZeroBitPattern) {
         return b == SignBit;
@@ -946,27 +941,29 @@ template <typename FloatType> struct MpfrAdapter {
       if (IsNanBitPattern(A))
         return {A, 0};
       if constexpr (Num::value_sign == SignMethod::Explicit)
-        return {BitsType(A ^ SignBit), 0};
+        return {opine::detail::xorWords(A, SignBit), 0};
       else if constexpr (Num::value_sign == SignMethod::RadixComplement)
-        return {MaskWidth((~A) + BitsType{1}), 0};
+        return {opine::detail::negateWordBits(A, TotalBits), 0};
       else if constexpr (Num::value_sign ==
                          SignMethod::DiminishedRadixComplement)
-        return {MaskWidth(~A), 0};
+        return {opine::detail::wordNot(A, TotalBits), 0};
       return {A, 0};
     }
     if (O == Op::Abs) {
       if (IsNanBitPattern(A))
         return {A, 0};
       if constexpr (Num::value_sign == SignMethod::Explicit)
-        return {BitsType(A & ~SignBit), 0};
+        return {opine::detail::andWords(
+                    A, opine::detail::wordNot(SignBit, TotalBits)),
+                0};
       else if constexpr (Num::value_sign == SignMethod::RadixComplement) {
-        if (A & SignBit)
-          return {MaskWidth((~A) + BitsType{1}), 0};
+        if (opine::detail::testWordBit(A, TotalBits - 1))
+          return {opine::detail::negateWordBits(A, TotalBits), 0};
         return {A, 0};
       } else if constexpr (Num::value_sign ==
                            SignMethod::DiminishedRadixComplement) {
-        if (A & SignBit)
-          return {MaskWidth(~A), 0};
+        if (opine::detail::testWordBit(A, TotalBits - 1))
+          return {opine::detail::wordNot(A, TotalBits), 0};
         return {A, 0};
       }
       return {A, 0};

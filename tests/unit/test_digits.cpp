@@ -56,6 +56,14 @@ static_assert(detail::lowUint64(
                       detail::digitsFrom<std::uint8_t, 2>(0x0064),
                       detail::digitsFrom<std::uint8_t, 2>(0x0007))
                       .rem) == 2); // 100 % 7
+static_assert(detail::lowUint64(
+                  detail::sqrtRemDigits(
+                      detail::digitsFrom<std::uint8_t, 2>(0x0064))
+                      .root) == 10); // isqrt(100)
+static_assert(detail::lowUint64(
+                  detail::sqrtRemDigits(
+                      detail::digitsFrom<std::uint8_t, 2>(0x0065))
+                      .rem) == 1); // 101 = 10^2 + 1
 } // namespace
 
 // -----------------------------------------------------------------
@@ -119,6 +127,19 @@ TEST_CASE("digits: uint8-limb unary ops, exhaustive 16-bit") {
       if (detail::anyBitsBelow(v, k) != ((x & lost_mask) != 0))
         ++failed;
     }
+  }
+  CHECK(failed == 0);
+}
+
+TEST_CASE("digits: sqrtRemDigits vs scalar reference, exhaustive 16-bit") {
+  int failed = 0;
+  std::uint32_t root = 0; // isqrt is monotone; grow it with v
+  for (std::uint32_t v = 0; v <= 0xFFFF; ++v) {
+    while ((root + 1) * (root + 1) <= v)
+      ++root;
+    auto sr = detail::sqrtRemDigits(fromU16(std::uint16_t(v)));
+    if (toU16(sr.root) != root || toU16(sr.rem) != v - root * root)
+      ++failed;
   }
   CHECK(failed == 0);
 }
@@ -218,6 +239,22 @@ void checkDivModInvariant(const DigitVector<Limb, Count> &num,
     ++failed;
 }
 
+template <typename Limb, int Count>
+void checkSqrtRemInvariant(const DigitVector<Limb, Count> &a, int &failed) {
+  auto sr = detail::sqrtRemDigits(a);
+  // root^2 + rem == a, exactly, in 2N limbs
+  auto wide = detail::mulDigits(sr.root, sr.root);
+  wide = detail::addDigits(wide, detail::resizeDigits<2 * Count>(sr.rem));
+  if (detail::compareDigits(wide, detail::resizeDigits<2 * Count>(a)) != 0)
+    ++failed;
+  // (root+1)^2 > a — root really is the integer square root. root
+  // is at most ceil(total_bits/2) bits, so the +1 cannot wrap.
+  auto rp1 = detail::addDigits(sr.root, detail::digitsFrom<Limb, Count>(1));
+  if (detail::compareDigits(detail::mulDigits(rp1, rp1),
+                            detail::resizeDigits<2 * Count>(a)) <= 0)
+    ++failed;
+}
+
 template <typename Limb, int Count> void wideInvariants(std::uint64_t seed) {
   using DV = DigitVector<Limb, Count>;
   std::mt19937_64 rng(seed);
@@ -279,7 +316,13 @@ template <typename Limb, int Count> void wideInvariants(std::uint64_t seed) {
       checkDivModInvariant(a, p, failed);
       checkDivModInvariant(p, a, failed);
     }
+
+    // sqrt reconstruction, same shapes
+    checkSqrtRemInvariant(a, failed);
+    checkSqrtRemInvariant(b, failed);
   }
+  for (const DV &p : adv)
+    checkSqrtRemInvariant(p, failed);
   CHECK(failed == 0);
 }
 

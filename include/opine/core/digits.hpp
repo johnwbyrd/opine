@@ -676,6 +676,45 @@ divModDigits(const DigitVector<Limb, Count> &num,
   return r;
 }
 
+// -----------------------------------------------------------------
+// Square root with remainder
+// -----------------------------------------------------------------
+
+template <typename Limb, int Count> struct SqrtRemResult {
+  DigitVector<Limb, Count> root;
+  DigitVector<Limb, Count> rem;
+};
+
+// Restoring bit-serial square root: one root bit per step, walking
+// a power-of-four probe down from the top of a. Postconditions:
+// root*root + rem == a and (root+1)^2 > a — root is the integer
+// square root and rem != 0 is the exact inexactness signal. Same
+// tier as divModDigits: slow and obviously correct; faster root
+// extraction is an equal-results Platform upgrade. No overflow:
+// with 4^m <= a the running root stays below 2^(m+2) and the probe
+// at 4^m, so root + probe never reaches a's bit width.
+template <typename Limb, int Count>
+constexpr SqrtRemResult<Limb, Count>
+sqrtRemDigits(const DigitVector<Limb, Count> &a) {
+  using DV = DigitVector<Limb, Count>;
+  SqrtRemResult<Limb, Count> r{};
+  const int top = topBitPos(a);
+  if (top < 0)
+    return r; // sqrt(0) = 0, rem 0
+  r.rem = a;
+  DV bit = withBit(DV{}, top & ~1); // largest power of four <= a
+  while (!isZero(bit)) {
+    const DV t = addDigits(r.root, bit);
+    r.root = shiftRightDigits(r.root, 1);
+    if (compareDigits(r.rem, t) >= 0) {
+      r.rem = subDigits(r.rem, t);
+      r.root = addDigits(r.root, bit);
+    }
+    bit = shiftRightDigits(bit, 2);
+  }
+  return r;
+}
+
 } // namespace detail
 } // namespace opine
 
