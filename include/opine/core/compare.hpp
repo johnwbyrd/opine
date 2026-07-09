@@ -70,8 +70,8 @@ constexpr int compareUnpacked(const UnpackedFloat<Storage> &a,
   // correctly too.
   if (a.biased_exp != b.biased_exp)
     return (a.biased_exp < b.biased_exp) ? -flip : flip;
-  if (a.significand != b.significand)
-    return (a.significand < b.significand) ? -flip : flip;
+  if (!(a.significand == b.significand))
+    return wordLess(a.significand, b.significand) ? -flip : flip;
   return 0;
 }
 

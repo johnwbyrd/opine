@@ -66,7 +66,17 @@ struct DigitVector {
   static constexpr int total_bits = limb_bits * Count;
 
   Limb d[Count]; // d[0] = least significant
+
+  friend constexpr bool operator==(const DigitVector &,
+                                   const DigitVector &) = default;
 };
+
+// Detects DigitVector storage (vs a scalar bits_t word).
+template <typename T> struct IsDigitVector : std::false_type {};
+template <typename L, int N>
+struct IsDigitVector<DigitVector<L, N>> : std::true_type {};
+template <typename T>
+inline constexpr bool is_digit_vector = IsDigitVector<T>::value;
 
 // -----------------------------------------------------------------
 // Limb selection
@@ -129,11 +139,32 @@ constexpr DigitVector<Limb, Count> orDigits(const DigitVector<Limb, Count> &a,
   return r;
 }
 
+// Limb-wise AND.
+template <typename Limb, int Count>
+constexpr DigitVector<Limb, Count> andDigits(const DigitVector<Limb, Count> &a,
+                                             const DigitVector<Limb, Count> &b) {
+  DigitVector<Limb, Count> r{};
+  for (int i = 0; i < Count; ++i)
+    r.d[i] = Limb(a.d[i] & b.d[i]);
+  return r;
+}
+
+// Limb-wise XOR.
+template <typename Limb, int Count>
+constexpr DigitVector<Limb, Count> xorDigits(const DigitVector<Limb, Count> &a,
+                                             const DigitVector<Limb, Count> &b) {
+  DigitVector<Limb, Count> r{};
+  for (int i = 0; i < Count; ++i)
+    r.d[i] = Limb(a.d[i] ^ b.d[i]);
+  return r;
+}
+
 // Bridge from a scalar storage word (bits_t, any width) into a
 // digit vector, moved in 64-bit chunks. The shift guards assume the
 // storage type pads by fewer than 64 bits (true of every bits_t
 // width the layouts use: exact powers of two, plus 80 → 128).
 template <typename Limb, int Count, typename Storage>
+  requires(!is_digit_vector<Storage>)
 constexpr DigitVector<Limb, Count> digitsFromStorage(Storage s) {
   constexpr int Chunks = (int(sizeof(Storage)) + 7) / 8;
   DigitVector<Limb, Count> r{};
@@ -148,9 +179,24 @@ constexpr DigitVector<Limb, Count> digitsFromStorage(Storage s) {
   return r;
 }
 
+// Re-chunk between digit geometries (e.g. 64-bit storage limbs to
+// 32-bit compute limbs), moved in 64-bit slices.
+template <typename Limb, int Count, typename SLimb, int SCount>
+constexpr DigitVector<Limb, Count>
+digitsFromStorage(const DigitVector<SLimb, SCount> &s) {
+  DigitVector<Limb, Count> r{};
+  constexpr int Chunks = (DigitVector<SLimb, SCount>::total_bits + 63) / 64;
+  for (int c = 0; c < Chunks; ++c)
+    r = orDigits(r, shiftLeftDigits(digitsFrom<Limb, Count>(lowUint64(
+                                        shiftRightDigits(s, c * 64))),
+                                    c * 64));
+  return r;
+}
+
 // The reverse bridge. Precondition: the value fits the storage
 // word.
 template <typename Storage, typename Limb, int Count>
+  requires(!is_digit_vector<Storage>)
 constexpr Storage storageFromDigits(const DigitVector<Limb, Count> &v) {
   constexpr int Chunks = (int(sizeof(Storage)) + 7) / 8;
   Storage r = Storage(lowUint64(v));
@@ -161,6 +207,20 @@ constexpr Storage storageFromDigits(const DigitVector<Limb, Count> &v) {
         r = Storage(r | (Storage(chunk) << (c * 64)));
     }
   }
+  return r;
+}
+
+template <typename Storage, typename Limb, int Count>
+  requires is_digit_vector<Storage>
+constexpr Storage storageFromDigits(const DigitVector<Limb, Count> &v) {
+  Storage r{};
+  constexpr int Chunks = (Storage::total_bits + 63) / 64;
+  for (int c = 0; c < Chunks; ++c)
+    r = orDigits(
+        r, shiftLeftDigits(
+               digitsFrom<typename Storage::limb_type, Storage::limb_count>(
+                   lowUint64(shiftRightDigits(v, c * 64))),
+               c * 64));
   return r;
 }
 
@@ -361,6 +421,192 @@ shiftRightStickyDigits(const DigitVector<Limb, Count> &v, int shift) {
   if (lost)
     r.d[0] = Limb(r.d[0] | Limb{1});
   return r;
+}
+
+// -----------------------------------------------------------------
+// Storage-word operations
+// -----------------------------------------------------------------
+// A storage word is either a scalar bits_t (formats up to 128
+// bits) or a DigitVector of limbs (wider formats, where no portable
+// scalar exists). These overload pairs let the codec layer —
+// pack/unpack, neg/abs, the oracle's decoder, the test harness —
+// manipulate either uniformly. DigitVector still never pretends to
+// be an integer: each function names a storage-word role, and the
+// scalar overloads are the trivial spellings.
+//
+// Scalar-overload shift guards are sizeof-based, so callers must
+// keep counts below the storage type's value width (all layout
+// offsets are).
+
+template <typename S>
+concept ScalarWord = !is_digit_vector<S>;
+
+// -- construction ---------------------------------------------------
+template <typename S>
+  requires ScalarWord<S>
+constexpr S wordFromUint(std::uint64_t v) {
+  return S(v);
+}
+template <typename S>
+  requires is_digit_vector<S>
+constexpr S wordFromUint(std::uint64_t v) {
+  return digitsFrom<typename S::limb_type, S::limb_count>(v);
+}
+
+// Single set bit at pos.
+template <typename S> constexpr S wordBit(int pos) {
+  if constexpr (is_digit_vector<S>)
+    return withBit(S{}, pos);
+  else
+    return S(S{1} << pos);
+}
+
+// The n lowest bits set (n == 0 gives zero; n may equal the word's
+// full width).
+template <typename S> constexpr S wordOnes(int n) {
+  if constexpr (is_digit_vector<S>) {
+    return maskLowDigits<typename S::limb_type, S::limb_count>(n);
+  } else {
+    if (n <= 0)
+      return S{0};
+    return maskLow<S>(n);
+  }
+}
+
+// -- queries --------------------------------------------------------
+template <typename S>
+  requires ScalarWord<S>
+constexpr std::uint64_t lowUint64(S s) {
+  return std::uint64_t(s);
+}
+
+template <typename S> constexpr bool isZeroWord(const S &s) {
+  if constexpr (is_digit_vector<S>)
+    return isZero(s);
+  else
+    return s == 0;
+}
+
+template <typename S> constexpr bool testWordBit(const S &s, int pos) {
+  if constexpr (is_digit_vector<S>)
+    return bitAt(s, pos);
+  else
+    return ((s >> pos) & S{1}) != 0;
+}
+
+template <typename S> constexpr bool wordLess(const S &a, const S &b) {
+  if constexpr (is_digit_vector<S>)
+    return compareDigits(a, b) < 0;
+  else
+    return a < b;
+}
+
+// Position of the most significant set bit, or -1 if zero.
+template <typename S> constexpr int wordTopBit(const S &s) {
+  if constexpr (is_digit_vector<S>) {
+    return topBitPos(s);
+  } else {
+    int pos = -1;
+    S v = s;
+    while (!isZeroWord(v)) {
+      ++pos;
+      v = S(v >> 1);
+    }
+    return pos;
+  }
+}
+
+// -- bitwise --------------------------------------------------------
+template <typename S> constexpr S xorWords(const S &a, const S &b) {
+  if constexpr (is_digit_vector<S>)
+    return xorDigits(a, b);
+  else
+    return S(a ^ b);
+}
+
+// Ones' complement within total_bits.
+template <typename S> constexpr S wordNot(const S &s, int total_bits) {
+  return xorWords(s, wordOnes<S>(total_bits));
+}
+
+template <typename S> constexpr S orWords(const S &a, const S &b) {
+  if constexpr (is_digit_vector<S>)
+    return orDigits(a, b);
+  else
+    return S(a | b);
+}
+
+template <typename S> constexpr S andWords(const S &a, const S &b) {
+  if constexpr (is_digit_vector<S>)
+    return andDigits(a, b);
+  else
+    return S(a & b);
+}
+
+template <typename S> constexpr S shiftWordLeft(const S &s, int k) {
+  if constexpr (is_digit_vector<S>) {
+    return shiftLeftDigits(s, k);
+  } else {
+    if (k <= 0)
+      return s;
+    if (k >= int(sizeof(S)) * 8)
+      return S{0};
+    return S(s << k);
+  }
+}
+
+template <typename S> constexpr S shiftWordRight(const S &s, int k) {
+  if constexpr (is_digit_vector<S>) {
+    return shiftRightDigits(s, k);
+  } else {
+    if (k <= 0)
+      return s;
+    if (k >= int(sizeof(S)) * 8)
+      return S{0};
+    return S(s >> k);
+  }
+}
+
+// -- arithmetic-flavoured word roles --------------------------------
+// Two's-complement negation within total_bits (the RadixComplement
+// whole-word transform).
+template <typename S> constexpr S negateWordBits(const S &s, int total_bits) {
+  if constexpr (is_digit_vector<S>)
+    return andDigits(subDigits(S{}, s), wordOnes<S>(total_bits));
+  else
+    return S(S(~s) + S{1}) & wordOnes<S>(total_bits);
+}
+
+// s + small / s - small (mod 2^width) — ULP-neighbour construction.
+template <typename S> constexpr S wordAddSmall(const S &s, std::uint64_t v) {
+  if constexpr (is_digit_vector<S>)
+    return addDigits(s, wordFromUint<S>(v));
+  else
+    return S(s + S(v));
+}
+template <typename S> constexpr S wordSubSmall(const S &s, std::uint64_t v) {
+  if constexpr (is_digit_vector<S>)
+    return subDigits(s, wordFromUint<S>(v));
+  else
+    return S(s - S(v));
+}
+
+// -- fields ---------------------------------------------------------
+// A field as a word (for wide significands).
+template <typename S>
+constexpr S extractWordField(const S &s, int offset, int width) {
+  if (width == 0)
+    return S{};
+  return andWords(shiftWordRight(s, offset), wordOnes<S>(width));
+}
+
+// A narrow field (sign, exponent — always <= 64 bits) as an integer.
+template <typename S>
+constexpr std::uint64_t extractIntField(const S &s, int offset, int width) {
+  if (width == 0)
+    return 0;
+  std::uint64_t v = lowUint64(shiftWordRight(s, offset));
+  return width >= 64 ? v : (v & ((std::uint64_t{1} << width) - 1));
 }
 
 // -----------------------------------------------------------------

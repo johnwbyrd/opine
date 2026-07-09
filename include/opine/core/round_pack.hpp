@@ -27,6 +27,7 @@
 // supported Rounding policy needs, and using a wider working
 // significand than Rounding::guard_bits does not change the result.
 
+#include <cstdint>
 #include <type_traits>
 
 #include "opine/core/arith_detail.hpp"
@@ -143,7 +144,7 @@ constexpr typename T::storage_type packMaxFinite(bool sign) {
   u.category = ValueCategory::Finite;
   u.sign = sign;
   u.biased_exp = MaxBiasedExp;
-  u.significand = Storage((Storage{1} << SigBits) - 1);
+  u.significand = wordOnes<Storage>(SigBits);
   return pack<T>(u);
 }
 
@@ -209,7 +210,6 @@ roundAndPack(bool result_sign, int result_exp,
   constexpr int MaxBiasedExp = max_biased_exp<T>;
   constexpr int GBits = GuardBits;
   constexpr int TotalBits = Fmt::total_bits;
-  constexpr Storage SigStoredMask = (Storage{1} << Fmt::sig_bits) - 1;
   static_assert(DV::total_bits > SigBits + GBits,
                 "working digit geometry too narrow for this format");
 
@@ -311,11 +311,13 @@ roundAndPack(bool result_sign, int result_exp,
   // largest finite pattern (one below +Inf).
   if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
     Storage sig_word = storageFromDigits<Storage>(stored_sig);
-    Storage tentative =
-        (Storage(result_exp) << Fmt::exp_offset) |
-        ((sig_word & SigStoredMask) << Fmt::sig_offset);
-    constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
-    if (tentative >= PosInf) {
+    Storage tentative = orWords(
+        shiftWordLeft(wordFromUint<Storage>(std::uint64_t(result_exp)),
+                      Fmt::exp_offset),
+        shiftWordLeft(andWords(sig_word, wordOnes<Storage>(Fmt::sig_bits)),
+                      Fmt::sig_offset));
+    const Storage PosInf = wordOnes<Storage>(TotalBits - 1);
+    if (!wordLess(tentative, PosInf)) {
       flags |= FlagOverflow | FlagInexact;
       if (detail::overflowRoundsToInf<Rnd>(result_sign))
         return packSpecial<T>(ValueCategory::Infinity, result_sign);

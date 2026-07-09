@@ -19,14 +19,9 @@
 
 #include <opine/opine.hpp>
 
-// The wide bundles (float256/512/1024) exist only where the
-// scalar storage type does — currently Clang only. The compute
-// pipeline itself is width-agnostic on both compilers.
-#if defined(__clang__)
+// The wide bundles (float256/512/1024) store their bits in a
+// DigitVector of limbs — available on every compiler.
 #define HAS_WIDE 1
-#else
-#define HAS_WIDE 0
-#endif
 
 // Cheap x^N via repeated squaring — only + and * needed.
 template <typename T>

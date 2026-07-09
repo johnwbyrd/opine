@@ -210,10 +210,10 @@ structural + stratified + random oracle battery for add / sub / mul /
 div / convert, with the MPFR working precision scaled per format
 (2026 bits for binary1024). `exact_conversion` holds up every rung of
 the ladder, and a 200k-value test confirms float64 embeds exactly in
-float1024 and back. One caveat: their *storage* is still the scalar
-`bits_t<k>`, which exists past 128 bits only on Clang — the
-arithmetic is width-generic, and GCC support waits on the multi-word
-Layout `storage_type`.
+float1024 and back. Their *storage* is a `DigitVector` of 64-bit
+limbs — the same limb-array path on every compiler, so **GCC runs
+binary1024 too**; `_BitInt` appears nowhere in storage or
+arithmetic.
 
 `convert<Dst, Src>` works between **any** two supported Types.
 NaN converts to the destination's canonical quiet NaN (payloads are
@@ -291,10 +291,10 @@ ctest --test-dir build --output-on-failure
 Set `-DOPINE_REQUIRE_ORACLE=ON` to fail configuration when MPFR is
 absent; CI uses this to prevent silent oracle skips.
 
-**Requirements:** C++20. Clang 18+ (uses `_BitInt(N)` for exact-width
-storage, any width) or GCC 13+ (storage falls back to `__int128`,
-capping *formats* at 128 stored bits — arithmetic itself is
-width-generic via the digit geometry).
+**Requirements:** C++20. Clang 18+ (scalar storage up to 128 bits via
+`_BitInt`) or GCC 13+ (via `__int128`); formats past 128 bits store
+in a `DigitVector` of limbs on both compilers, so there is no format
+ceiling on either.
 MSVC is not supported. MPFR + GMP are needed for the oracle tests
 (`apt install libmpfr-dev libgmp-dev` on Debian/Ubuntu, `brew install
 mpfr gmp` on macOS). SoftFloat and TestFloat are fetched from source

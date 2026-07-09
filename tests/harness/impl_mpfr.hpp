@@ -101,27 +101,40 @@ namespace detail {
 // shift by >= the width is undefined — Clang miscompiles it. sizeof
 // rounds up, so the guarded shifts are always strictly in-width.
 template <typename BitsType> void bitsToMpz(mpz_t Z, BitsType Val) {
-  constexpr int NumBytes = sizeof(BitsType);
-  unsigned char Bytes[NumBytes];
-  for (int I = 0; I < NumBytes; ++I) {
-    Bytes[I] = static_cast<unsigned char>(Val);
-    if (I + 1 < NumBytes)
-      Val >>= 8;
+  if constexpr (opine::detail::is_digit_vector<BitsType>) {
+    // Little-endian limb order, host endianness within each limb.
+    mpz_import(Z, BitsType::limb_count, -1,
+               sizeof(typename BitsType::limb_type), 0, 0, Val.d);
+  } else {
+    constexpr int NumBytes = sizeof(BitsType);
+    unsigned char Bytes[NumBytes];
+    for (int I = 0; I < NumBytes; ++I) {
+      Bytes[I] = static_cast<unsigned char>(Val);
+      if (I + 1 < NumBytes)
+        Val >>= 8;
+    }
+    mpz_import(Z, NumBytes, -1, 1, 0, 0, Bytes);
   }
-  mpz_import(Z, NumBytes, -1, 1, 0, 0, Bytes);
 }
 
 template <typename BitsType> BitsType mpzToBits(const mpz_t Z) {
-  constexpr int NumBytes = sizeof(BitsType);
-  unsigned char Bytes[NumBytes] = {};
-  mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
-  BitsType Val = 0;
-  for (int I = NumBytes - 1; I >= 0; --I) {
-    if (I != NumBytes - 1)
-      Val <<= 8;
-    Val |= BitsType(Bytes[I]);
+  if constexpr (opine::detail::is_digit_vector<BitsType>) {
+    BitsType Val{};
+    mpz_export(Val.d, nullptr, -1, sizeof(typename BitsType::limb_type), 0, 0,
+               Z);
+    return Val;
+  } else {
+    constexpr int NumBytes = sizeof(BitsType);
+    unsigned char Bytes[NumBytes] = {};
+    mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
+    BitsType Val = 0;
+    for (int I = NumBytes - 1; I >= 0; --I) {
+      if (I != NumBytes - 1)
+        Val <<= 8;
+      Val |= BitsType(Bytes[I]);
+    }
+    return Val;
   }
-  return Val;
 }
 
 } // namespace detail
@@ -137,54 +150,40 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   using BitsType = typename FloatType::storage_type;
 
   constexpr int TotalBits = Fmt::total_bits;
-  Bits &= opine::maskLow<BitsType>(TotalBits);
+  Bits = opine::detail::andWords(Bits,
+                                 opine::detail::wordOnes<BitsType>(TotalBits));
 
   MpfrFloat Result{oraclePrecision<FloatType>};
 
   // Phase 1: Check for special values identified by complete bit pattern
 
   if constexpr (Enc::nan_encoding == NanEncoding::TrapValue) {
-    constexpr BitsType TrapValue = BitsType{1} << (TotalBits - 1);
-    if (Bits == TrapValue) {
+    if (Bits == opine::detail::wordBit<BitsType>(TotalBits - 1)) {
       mpfr_set_nan(Result);
       return Result;
     }
   }
 
   if constexpr (Enc::inf_encoding == InfEncoding::IntegerExtremes) {
-    constexpr BitsType PosInf = (BitsType{1} << (TotalBits - 1)) - 1;
-    if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-      constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
-      constexpr BitsType NegInf = (WordMask - PosInf + 1) & WordMask;
-      if (Bits == PosInf) {
-        mpfr_set_inf(Result, +1);
-        return Result;
-      }
-      if (Bits == NegInf) {
-        mpfr_set_inf(Result, -1);
-        return Result;
-      }
-    } else {
-      constexpr BitsType NegInf = ~PosInf + 1;
-      if (Bits == PosInf) {
-        mpfr_set_inf(Result, +1);
-        return Result;
-      }
-      if (Bits == NegInf) {
-        mpfr_set_inf(Result, -1);
-        return Result;
-      }
+    const BitsType PosInf = opine::detail::wordOnes<BitsType>(TotalBits - 1);
+    const BitsType NegInf = opine::detail::negateWordBits(PosInf, TotalBits);
+    if (Bits == PosInf) {
+      mpfr_set_inf(Result, +1);
+      return Result;
+    }
+    if (Bits == NegInf) {
+      mpfr_set_inf(Result, -1);
+      return Result;
     }
   }
 
   if constexpr (Enc::nan_encoding == NanEncoding::NegativeZeroBitPattern) {
-    BitsType RawSign =
-        extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
-    BitsType RawExp =
-        extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    BitsType RawMant =
-        extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
-    if (RawSign != 0 && RawExp == 0 && RawMant == 0) {
+    if (opine::detail::extractIntField(Bits, Fmt::sign_offset,
+                                       Fmt::sign_bits) != 0 &&
+        opine::detail::extractIntField(Bits, Fmt::exp_offset, Fmt::exp_bits) ==
+            0 &&
+        opine::detail::isZeroWord(opine::detail::extractWordField(
+            Bits, Fmt::sig_offset, Fmt::sig_bits))) {
       mpfr_set_nan(Result);
       return Result;
     }
@@ -192,64 +191,54 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   // Phase 2: Determine sign and extract magnitude fields
 
-  BitsType RawSign =
-      extractField(Bits, Fmt::sign_offset, Fmt::sign_bits);
   bool IsNegative = false;
-
-  BitsType MagExp;
-  BitsType MagMant;
+  std::uint64_t MagExp = 0;
+  BitsType MagMant{};
 
   if constexpr (Enc::value_sign == SignMethod::Explicit) {
-    IsNegative = (RawSign != 0);
-    MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-    MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
+    IsNegative = opine::detail::extractIntField(Bits, Fmt::sign_offset,
+                                                Fmt::sign_bits) != 0;
+    MagExp = opine::detail::extractIntField(Bits, Fmt::exp_offset,
+                                            Fmt::exp_bits);
+    MagMant = opine::detail::extractWordField(Bits, Fmt::sig_offset,
+                                              Fmt::sig_bits);
   } else if constexpr (Enc::value_sign == SignMethod::RadixComplement) {
-    IsNegative = (RawSign != 0);
-    if (IsNegative) {
-      BitsType Positive;
-      if constexpr (TotalBits < int(sizeof(BitsType) * 8)) {
-        constexpr BitsType WordMask = (BitsType{1} << TotalBits) - 1;
-        Positive = (WordMask - Bits + 1) & WordMask;
-      } else {
-        Positive = ~Bits + 1;
-      }
-      MagExp = extractField(Positive, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant =
-          extractField(Positive, Fmt::sig_offset, Fmt::sig_bits);
-    } else {
-      MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
-    }
+    IsNegative = opine::detail::testWordBit(Bits, TotalBits - 1);
+    BitsType Positive =
+        IsNegative ? opine::detail::negateWordBits(Bits, TotalBits) : Bits;
+    MagExp = opine::detail::extractIntField(Positive, Fmt::exp_offset,
+                                            Fmt::exp_bits);
+    MagMant = opine::detail::extractWordField(Positive, Fmt::sig_offset,
+                                              Fmt::sig_bits);
   } else if constexpr (Enc::value_sign == SignMethod::DiminishedRadixComplement) {
-    IsNegative = (RawSign != 0);
+    IsNegative = opine::detail::extractIntField(Bits, Fmt::sign_offset,
+                                                Fmt::sign_bits) != 0;
+    MagExp = opine::detail::extractIntField(Bits, Fmt::exp_offset,
+                                            Fmt::exp_bits);
+    MagMant = opine::detail::extractWordField(Bits, Fmt::sig_offset,
+                                              Fmt::sig_bits);
     if (IsNegative) {
-      constexpr BitsType ExpMask = (BitsType{1} << Fmt::exp_bits) - 1;
-      constexpr BitsType MantMask = (BitsType{1} << Fmt::sig_bits) - 1;
-      MagExp =
-          extractField(Bits, Fmt::exp_offset, Fmt::exp_bits) ^ ExpMask;
-      MagMant =
-          extractField(Bits, Fmt::sig_offset, Fmt::sig_bits) ^
-          MantMask;
-    } else {
-      MagExp = extractField(Bits, Fmt::exp_offset, Fmt::exp_bits);
-      MagMant = extractField(Bits, Fmt::sig_offset, Fmt::sig_bits);
+      MagExp ^= (std::uint64_t{1} << Fmt::exp_bits) - 1;
+      MagMant = opine::detail::xorWords(
+          MagMant, opine::detail::wordOnes<BitsType>(Fmt::sig_bits));
     }
   }
 
   // Phase 3: Check for special values identified by field values
 
-  constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
+  constexpr std::uint64_t ExpMax = (std::uint64_t{1} << Fmt::exp_bits) - 1;
 
   if constexpr (Enc::inf_encoding == InfEncoding::ReservedExponent) {
     if constexpr (Fmt::implicit_digit) {
-      if (MagExp == ExpMax && MagMant == 0) {
+      if (MagExp == ExpMax && opine::detail::isZeroWord(MagMant)) {
         mpfr_set_inf(Result, IsNegative ? -1 : +1);
         return Result;
       }
     } else {
-      constexpr BitsType JBit = BitsType{1} << (Fmt::sig_bits - 1);
-      constexpr BitsType FracMask = JBit - 1;
-      if (MagExp == ExpMax && (MagMant & FracMask) == 0) {
+      if (MagExp == ExpMax &&
+          opine::detail::isZeroWord(opine::detail::andWords(
+              MagMant,
+              opine::detail::wordOnes<BitsType>(Fmt::sig_bits - 1)))) {
         mpfr_set_inf(Result, IsNegative ? -1 : +1);
         return Result;
       }
@@ -257,22 +246,15 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   }
 
   if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-    if constexpr (Fmt::implicit_digit) {
-      if (MagExp == ExpMax && MagMant != 0) {
-        mpfr_set_nan(Result);
-        return Result;
-      }
-    } else {
-      if (MagExp == ExpMax && MagMant != 0) {
-        mpfr_set_nan(Result);
-        return Result;
-      }
+    if (MagExp == ExpMax && !opine::detail::isZeroWord(MagMant)) {
+      mpfr_set_nan(Result);
+      return Result;
     }
   }
 
   // Phase 4: Zero detection
 
-  if (MagExp == 0 && MagMant == 0) {
+  if (MagExp == 0 && opine::detail::isZeroWord(MagMant)) {
     if constexpr (Enc::negative_zero == NegativeZero::Exists) {
       mpfr_set_zero(Result, IsNegative ? -1 : +1);
     } else {
@@ -285,7 +267,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 
   constexpr int Bias = FloatType::number::exponent_bias;
   mpfr_exp_t Exponent;
-  BitsType Mantissa;
+  BitsType Mantissa{};
 
   if constexpr (Fmt::implicit_digit) {
     if (MagExp == 0) {
@@ -304,7 +286,8 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
     } else {
       Exponent = static_cast<mpfr_exp_t>(static_cast<int>(MagExp)) - Bias -
                  Fmt::sig_bits;
-      Mantissa = (BitsType{1} << Fmt::sig_bits) | MagMant;
+      Mantissa = opine::detail::orWords(
+          opine::detail::wordBit<BitsType>(Fmt::sig_bits), MagMant);
     }
   } else {
     if (MagExp == 0) {
@@ -440,9 +423,9 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   constexpr int MantBits = Fmt::sig_bits;
   constexpr int ExpBits = Fmt::exp_bits;
   constexpr int Bias = Num::exponent_bias;
-  constexpr BitsType ExpAllOnes = (BitsType{1} << ExpBits) - 1;
-  constexpr BitsType MantMask = (BitsType{1} << MantBits) - 1;
-  constexpr BitsType SignBit = BitsType{1} << Fmt::sign_offset;
+  constexpr std::uint64_t ExpAllOnes = (std::uint64_t{1} << ExpBits) - 1;
+  const BitsType MantMask = opine::detail::wordOnes<BitsType>(MantBits);
+  const BitsType SignBit = opine::detail::wordBit<BitsType>(Fmt::sign_offset);
 
   // The largest biased exponent finite values may use. When either
   // NaN or Inf sits at ReservedExponent, one exponent value is
@@ -471,7 +454,8 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   // Necessary when storage_type is wider than the format (e.g., a
   // 12-bit padded format stored in uint16_t).
   auto MaskWidth = [](BitsType b) -> BitsType {
-    return b & opine::maskLow<BitsType>(TotalBits);
+    return opine::detail::andWords(b,
+                                   opine::detail::wordOnes<BitsType>(TotalBits));
   };
 
   // Apply the Number's value_sign to a positive-magnitude bit
@@ -482,12 +466,12 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     if (!negative)
       return positive;
     if constexpr (Num::value_sign == SignMethod::Explicit)
-      return positive | SignBit;
+      return opine::detail::orWords(positive, SignBit);
     else if constexpr (Num::value_sign == SignMethod::RadixComplement)
-      return MaskWidth((~positive) + BitsType{1});
+      return opine::detail::negateWordBits(positive, TotalBits);
     else if constexpr (Num::value_sign ==
                        SignMethod::DiminishedRadixComplement)
-      return MaskWidth(~positive);
+      return opine::detail::wordNot(positive, TotalBits);
     return positive;
   };
 
@@ -499,38 +483,53 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   // None → +0 as a best effort (upstream must not produce NaN in
   // formats that can't represent it).
   auto EmitNan = [&]() -> BitsType {
+    using opine::detail::orWords;
+    using opine::detail::shiftWordLeft;
+    using opine::detail::wordBit;
+    using opine::detail::wordFromUint;
     if constexpr (Num::nan_encoding == NanEncoding::ReservedExponent) {
+      BitsType ExpField = shiftWordLeft(wordFromUint<BitsType>(ExpAllOnes),
+                                        Fmt::exp_offset);
       if constexpr (Fmt::implicit_digit)
-        return (BitsType(ExpAllOnes) << Fmt::exp_offset) |
-               (BitsType{1} << (MantBits - 1));
-      constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
-      constexpr BitsType QBit = BitsType{1} << (MantBits - 2);
-      return (BitsType(ExpAllOnes) << Fmt::exp_offset) | JBit | QBit;
+        return orWords(ExpField,
+                       wordBit<BitsType>(Fmt::sig_offset + MantBits - 1));
+      return orWords(
+          ExpField,
+          orWords(wordBit<BitsType>(Fmt::sig_offset + MantBits - 1),
+                  wordBit<BitsType>(Fmt::sig_offset + MantBits - 2)));
     } else if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
-      return BitsType{1} << (TotalBits - 1);
+      return opine::detail::wordBit<BitsType>(TotalBits - 1);
     } else if constexpr (Num::nan_encoding ==
                          NanEncoding::NegativeZeroBitPattern) {
       return SignBit;
     }
-    return BitsType{0};
+    return BitsType{};
   };
 
   // Positive-magnitude +Inf. For None, this returns the max-finite
   // bit pattern instead — inf_encoding=None means overflow
   // saturates rather than emitting Inf.
   auto PosInfBits = [&]() -> BitsType {
+    using opine::detail::orWords;
+    using opine::detail::shiftWordLeft;
+    using opine::detail::wordBit;
+    using opine::detail::wordFromUint;
     if constexpr (Num::inf_encoding == InfEncoding::ReservedExponent) {
+      BitsType ExpField = shiftWordLeft(wordFromUint<BitsType>(ExpAllOnes),
+                                        Fmt::exp_offset);
       if constexpr (Fmt::implicit_digit)
-        return BitsType(ExpAllOnes) << Fmt::exp_offset;
-      constexpr BitsType JBit = BitsType{1} << (MantBits - 1);
-      return (BitsType(ExpAllOnes) << Fmt::exp_offset) | JBit;
+        return ExpField;
+      return orWords(ExpField,
+                     wordBit<BitsType>(Fmt::sig_offset + MantBits - 1));
     } else if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-      return (BitsType{1} << (TotalBits - 1)) - 1;
+      return opine::detail::wordOnes<BitsType>(TotalBits - 1);
     } else {
       // None: saturate. Under this branch MaxBiasedExp is
       // ExpAllOnes (no NaN or Inf uses ReservedExponent).
-      return (BitsType(MaxBiasedExp) << Fmt::exp_offset) |
-             (MantMask << Fmt::sig_offset);
+      return orWords(
+          shiftWordLeft(wordFromUint<BitsType>(std::uint64_t(MaxBiasedExp)),
+                        Fmt::exp_offset),
+          shiftWordLeft(MantMask, Fmt::sig_offset));
     }
   };
 
@@ -540,14 +539,19 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   // Positive-magnitude largest-finite pattern.
   auto MaxFiniteBits = [&]() -> BitsType {
+    using opine::detail::shiftWordLeft;
+    using opine::detail::wordFromUint;
     if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes)
-      return ((BitsType{1} << (TotalBits - 1)) - 1) - 1; // one below +Inf
+      return opine::detail::wordSubSmall(
+          opine::detail::wordOnes<BitsType>(TotalBits - 1), 1); // below +Inf
     // ReservedExponent (and None, where PosInfBits already
     // saturates): max biased exponent, all-ones significand. For
     // explicit-J-bit formats that is J=1 plus an all-ones fraction —
     // the same all-ones stored field.
-    return (BitsType(MaxBiasedExp) << Fmt::exp_offset) |
-           (MantMask << Fmt::sig_offset);
+    return opine::detail::orWords(
+        shiftWordLeft(wordFromUint<BitsType>(std::uint64_t(MaxBiasedExp)),
+                      Fmt::exp_offset),
+        shiftWordLeft(MantMask, Fmt::sig_offset));
   };
 
   // Finite result that overflowed the format. IEEE 754 §7.4: the
@@ -570,9 +574,9 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
       if constexpr (Num::value_sign == SignMethod::Explicit)
         return SignBit;
       if constexpr (Num::value_sign == SignMethod::DiminishedRadixComplement)
-        return MaskWidth(~BitsType{0});
+        return opine::detail::wordOnes<BitsType>(TotalBits);
     }
-    return BitsType{0};
+    return BitsType{};
   };
 
   // -- Rounding kernel -------------------------------------------
@@ -626,7 +630,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   const int IeeeExp = int(mpfr_get_exp(Val)) - 1;
   const mpfr_rnd_t AbsRnd = AbsRoundingMode(Negative);
 
-  BitsType StoredExp{};
+  std::uint64_t StoredExp = 0;
   BitsType StoredMant{};
   bool UnderflowedToZero = false;
 
@@ -637,17 +641,18 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
     // Round-up-into-next-binade (e.g. 1.111… → 10.0).
     int ExpAdj = IeeeExp;
-    if (IntSig >= (BitsType{1} << (RoundingMantBits + 1))) {
+    if (!opine::detail::wordLess(
+            IntSig, opine::detail::wordBit<BitsType>(RoundingMantBits + 1))) {
       ExpAdj++;
-      IntSig >>= 1;
+      IntSig = opine::detail::shiftWordRight(IntSig, 1);
     }
 
     const int BiasedExp = ExpAdj + Bias;
     if (BiasedExp > MaxBiasedExp)
       return EmitOverflow(Negative);
 
-    StoredExp = BitsType(BiasedExp);
-    StoredMant = IntSig & MantMask;
+    StoredExp = std::uint64_t(BiasedExp);
+    StoredMant = opine::detail::andWords(IntSig, MantMask);
   } else {
     // Subnormal range. Scale so the rounded integer is the
     // subnormal mantissa (implicit-digit) or the full stored
@@ -655,11 +660,12 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
     BitsType Mant = RoundToInteger(Bias - 1 + RoundingMantBits, AbsRnd);
 
     if constexpr (Fmt::implicit_digit) {
-      if (Mant >= (BitsType{1} << MantBits)) {
+      if (!opine::detail::wordLess(Mant,
+                                   opine::detail::wordBit<BitsType>(MantBits))) {
         // Rounded up into the smallest normal.
         StoredExp = 1;
-        StoredMant = 0;
-      } else if (Mant == 0) {
+        StoredMant = BitsType{};
+      } else if (opine::detail::isZeroWord(Mant)) {
         UnderflowedToZero = true;
       } else {
         StoredExp = 0;
@@ -667,10 +673,11 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
       }
     } else {
       // Explicit-J-bit: smallest normal has J-bit set, fraction 0.
-      if (Mant >= (BitsType{1} << (MantBits - 1))) {
+      if (!opine::detail::wordLess(
+              Mant, opine::detail::wordBit<BitsType>(MantBits - 1))) {
         StoredExp = 1;
-        StoredMant = BitsType{1} << (MantBits - 1);
-      } else if (Mant == 0) {
+        StoredMant = opine::detail::wordBit<BitsType>(MantBits - 1);
+      } else if (opine::detail::isZeroWord(Mant)) {
         UnderflowedToZero = true;
       } else {
         StoredExp = 0;
@@ -685,7 +692,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   if constexpr (Num::denormal_mode == DenormalMode::FlushToZero ||
                 Num::denormal_mode == DenormalMode::FlushBoth) {
     if (!UnderflowedToZero && Fmt::implicit_digit && StoredExp == 0 &&
-        StoredMant != 0) {
+        !opine::detail::isZeroWord(StoredMant)) {
       UnderflowedToZero = true;
     }
   }
@@ -695,15 +702,17 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 
   // -- Assemble positive-magnitude form and apply value_sign -----
 
-  BitsType Positive =
-      (StoredExp << Fmt::exp_offset) | (StoredMant << Fmt::sig_offset);
+  BitsType Positive = opine::detail::orWords(
+      opine::detail::shiftWordLeft(
+          opine::detail::wordFromUint<BitsType>(StoredExp), Fmt::exp_offset),
+      opine::detail::shiftWordLeft(StoredMant, Fmt::sig_offset));
 
   // IntegerExtremes overflow collision: if the rounded (exp, sig)
   // fields, laid out in positive-magnitude form, reach the +Inf
   // bit pattern (0x7F…F), the "finite" result actually overflows.
   if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-    constexpr BitsType PosInf = (BitsType{1} << (TotalBits - 1)) - 1;
-    if (Positive >= PosInf)
+    const BitsType PosInf = opine::detail::wordOnes<BitsType>(TotalBits - 1);
+    if (!opine::detail::wordLess(Positive, PosInf))
       return EmitOverflow(Negative);
   }
 
@@ -800,11 +809,10 @@ uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
     // Largest finite value, decoded from its bit pattern (for
     // IntegerExtremes encodings the all-ones pattern is +Inf, so
     // max finite is one below it).
-    BitsType MaxBits;
+    BitsType MaxBits{};
     if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-      constexpr BitsType PosInf =
-          (BitsType{1} << (Fmt::total_bits - 1)) - 1;
-      MaxBits = BitsType(PosInf - 1);
+      MaxBits = opine::detail::wordSubSmall(
+          opine::detail::wordOnes<BitsType>(Fmt::total_bits - 1), 1);
     } else {
       MaxBits = opine::detail::packMaxFinite<FloatType>(false);
     }
@@ -841,9 +849,12 @@ template <typename FloatType> struct MpfrAdapter {
 
     // Comparison ops: direct comparison, no rounding
     switch (O) {
-    case Op::Eq: return {BitsType(mpfr_equal_p(Ma, Mb) ? 1 : 0), 0};
-    case Op::Lt: return {BitsType(mpfr_less_p(Ma, Mb) ? 1 : 0), 0};
-    case Op::Le: return {BitsType(mpfr_lessequal_p(Ma, Mb) ? 1 : 0), 0};
+    case Op::Eq:
+      return {opine::detail::wordFromUint<BitsType>(mpfr_equal_p(Ma, Mb) ? 1 : 0), 0};
+    case Op::Lt:
+      return {opine::detail::wordFromUint<BitsType>(mpfr_less_p(Ma, Mb) ? 1 : 0), 0};
+    case Op::Le:
+      return {opine::detail::wordFromUint<BitsType>(mpfr_lessequal_p(Ma, Mb) ? 1 : 0), 0};
     default: break;
     }
 

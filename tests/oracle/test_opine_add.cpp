@@ -15,7 +15,6 @@
 #include <doctest/doctest.h>
 
 #include "harness/generic_binary_test.hpp"
-#include "harness/wide_formats.hpp"
 
 using namespace opine;
 using namespace opine::testing;
@@ -30,12 +29,10 @@ TEST_CASE_TEMPLATE("add: OPINE vs MPFR", T,
   GenericBinaryFpTest<T>::run(Op::Add);
 }
 
-#if OPINE_TEST_HAS_WIDE_STORAGE
 TEST_CASE_TEMPLATE("add: OPINE vs MPFR (binary256/1024)", T, float256,
                    float1024) {
   GenericBinaryFpTest<T>::run(Op::Add);
 }
-#endif
 
 // Encoding × rounding sweep (exhaustive FP8). The default-rounding
 // (ToNearestTiesToEven) combinations are covered above; FastType

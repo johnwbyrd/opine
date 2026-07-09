@@ -28,8 +28,6 @@
 #include <random>
 #include <vector>
 
-#include "harness/wide_formats.hpp"
-
 #include "harness/impl_mpfr.hpp"
 #include "harness/test_harness.hpp"
 #include "opine/core/convert.hpp"
@@ -253,9 +251,8 @@ TEST_CASE("convert: round-trip identity where exact_conversion holds") {
 }
 
 // -----------------------------------------------------------------
-// binary256/512/1024 (Clang lane: scalar wide storage)
+// binary256/512/1024 (DigitVector storage — both compilers)
 // -----------------------------------------------------------------
-#if OPINE_TEST_HAS_WIDE_STORAGE
 
 // The binary{k} ladder widens exactly at every rung.
 static_assert(exact_conversion<float128, float256>);
@@ -298,8 +295,6 @@ TEST_CASE("convert: f64 embeds exactly in f1024 (round-trip)") {
     check(v);
   CHECK(failed == 0);
 }
-
-#endif // OPINE_TEST_HAS_WIDE_STORAGE
 
 // -----------------------------------------------------------------
 // Native bridges

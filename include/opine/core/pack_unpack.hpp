@@ -13,11 +13,17 @@
 // unpacks to the same layout, which is what lets subsequent
 // arithmetic steps be format-blind.
 //
+// Storage may be a scalar bits_t word (formats up to 128 bits) or
+// a DigitVector of limbs (wider); every bit-level step here goes
+// through the storage-word operations in digits.hpp, so one codec
+// serves both.
+//
 // This slice covers Explicit and RadixComplement value_sign only.
 // DiminishedRadixComplement (CDC 6600) is deferred.
 
 #include "opine/core/arith_detail.hpp"
 #include "opine/core/bits.hpp"
+#include "opine/core/digits.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/number.hpp"
 
@@ -52,29 +58,6 @@ template <typename Storage> struct UnpackedFloat {
   Storage significand;
 };
 
-namespace detail {
-
-template <typename Storage>
-constexpr Storage extractField(Storage bits, int offset, int width) {
-  if (width == 0)
-    return Storage{0};
-  return (bits >> offset) & ((Storage{1} << width) - 1);
-}
-
-// Negate the low TotalBits of a storage word (two's complement).
-template <typename Storage>
-constexpr Storage negateWord(Storage bits, int total_bits) {
-  return Storage((~bits) + Storage{1}) & maskLow<Storage>(total_bits);
-}
-
-// Mask the low TotalBits of a storage word.
-template <typename Storage>
-constexpr Storage maskToWidth(Storage bits, int total_bits) {
-  return bits & maskLow<Storage>(total_bits);
-}
-
-} // namespace detail
-
 // -----------------------------------------------------------------
 // unpack
 // -----------------------------------------------------------------
@@ -92,9 +75,9 @@ unpack(typename T::storage_type bits) {
                 "in the type system but not yet implemented");
 
   constexpr int TotalBits = Layout::total_bits;
-  constexpr Storage ExpMax = (Storage{1} << Layout::exp_bits) - 1;
+  constexpr std::uint64_t ExpMax = (std::uint64_t{1} << Layout::exp_bits) - 1;
 
-  bits = detail::maskToWidth(bits, TotalBits);
+  bits = detail::andWords(bits, detail::wordOnes<Storage>(TotalBits));
 
   UnpackedFloat<Storage> u{};
 
@@ -104,16 +87,15 @@ unpack(typename T::storage_type bits) {
   // value is undefined).
 
   if constexpr (Number::nan_encoding == NanEncoding::TrapValue) {
-    constexpr Storage TrapVal = Storage{1} << (TotalBits - 1);
-    if (bits == TrapVal) {
+    if (bits == detail::wordBit<Storage>(TotalBits - 1)) {
       u.category = ValueCategory::NaN;
       return u;
     }
   }
 
   if constexpr (Number::inf_encoding == InfEncoding::IntegerExtremes) {
-    constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
-    Storage NegInf = detail::negateWord(PosInf, TotalBits);
+    const Storage PosInf = detail::wordOnes<Storage>(TotalBits - 1);
+    const Storage NegInf = detail::negateWordBits(PosInf, TotalBits);
     if (bits == PosInf) {
       u.category = ValueCategory::Infinity;
       u.sign = false;
@@ -132,24 +114,24 @@ unpack(typename T::storage_type bits) {
   Storage mag_bits = bits;
 
   if constexpr (Number::value_sign == SignMethod::Explicit) {
-    sign = (detail::extractField(bits, Layout::sign_offset, Layout::sign_bits) != 0);
+    sign = detail::extractIntField(bits, Layout::sign_offset,
+                                   Layout::sign_bits) != 0;
     // Fields are already positive-magnitude for Explicit.
   } else if constexpr (Number::value_sign == SignMethod::RadixComplement) {
     // MSB of whole word is sign. If set, negate to positive form.
-    Storage MsbMask = Storage{1} << (TotalBits - 1);
-    sign = (bits & MsbMask) != 0;
+    sign = detail::testWordBit(bits, TotalBits - 1);
     if (sign)
-      mag_bits = detail::negateWord(bits, TotalBits);
+      mag_bits = detail::negateWordBits(bits, TotalBits);
   } else {
     static_assert(Number::value_sign == SignMethod::Explicit ||
                       Number::value_sign == SignMethod::RadixComplement,
                   "unpack does not yet support this value_sign");
   }
 
-  Storage raw_exp = detail::extractField(mag_bits, Layout::exp_offset,
-                                         Layout::exp_bits);
-  Storage raw_sig = detail::extractField(mag_bits, Layout::sig_offset,
-                                         Layout::sig_bits);
+  const std::uint64_t raw_exp =
+      detail::extractIntField(mag_bits, Layout::exp_offset, Layout::exp_bits);
+  Storage raw_sig =
+      detail::extractWordField(mag_bits, Layout::sig_offset, Layout::sig_bits);
 
   // ---------- Phase 3: field-based special values ----------
 
@@ -158,7 +140,7 @@ unpack(typename T::storage_type bits) {
     // against the *raw* sign bit — not the unpacked sign flag —
     // since Explicit value_sign leaves negative zero's fields
     // as (sign=1, exp=0, sig=0).
-    if (sign && raw_exp == 0 && raw_sig == 0) {
+    if (sign && raw_exp == 0 && detail::isZeroWord(raw_sig)) {
       u.category = ValueCategory::NaN;
       return u;
     }
@@ -166,7 +148,7 @@ unpack(typename T::storage_type bits) {
 
   if constexpr (Number::inf_encoding == InfEncoding::ReservedExponent) {
     if constexpr (Layout::implicit_digit) {
-      if (raw_exp == ExpMax && raw_sig == 0) {
+      if (raw_exp == ExpMax && detail::isZeroWord(raw_sig)) {
         u.category = ValueCategory::Infinity;
         u.sign = sign;
         return u;
@@ -175,9 +157,9 @@ unpack(typename T::storage_type bits) {
       // Explicit leading digit: max exponent with zero fraction is
       // infinity whether or not J is set — a clear J-bit here is the
       // x87 pseudo-infinity, which decodes to the same value.
-      constexpr Storage JBit = Storage{1} << (Layout::sig_bits - 1);
-      constexpr Storage FracMask = JBit - 1;
-      if (raw_exp == ExpMax && (raw_sig & FracMask) == 0) {
+      const Storage Frac =
+          detail::andWords(raw_sig, detail::wordOnes<Storage>(Layout::sig_bits - 1));
+      if (raw_exp == ExpMax && detail::isZeroWord(Frac)) {
         u.category = ValueCategory::Infinity;
         u.sign = sign;
         return u;
@@ -187,16 +169,16 @@ unpack(typename T::storage_type bits) {
 
   if constexpr (Number::nan_encoding == NanEncoding::ReservedExponent) {
     if constexpr (Layout::implicit_digit) {
-      if (raw_exp == ExpMax && raw_sig != 0) {
+      if (raw_exp == ExpMax && !detail::isZeroWord(raw_sig)) {
         u.category = ValueCategory::NaN;
         return u;
       }
     } else {
       // For explicit-J-bit formats, any exp=max with fraction!=0
       // (regardless of J) is a NaN or pseudo-NaN.
-      constexpr Storage JBit = Storage{1} << (Layout::sig_bits - 1);
-      constexpr Storage FracMask = JBit - 1;
-      if (raw_exp == ExpMax && (raw_sig & FracMask) != 0) {
+      const Storage Frac =
+          detail::andWords(raw_sig, detail::wordOnes<Storage>(Layout::sig_bits - 1));
+      if (raw_exp == ExpMax && !detail::isZeroWord(Frac)) {
         u.category = ValueCategory::NaN;
         return u;
       }
@@ -209,7 +191,7 @@ unpack(typename T::storage_type bits) {
   // formats a zero stored significand with nonzero exponent is a
   // power of two.
 
-  if (raw_sig == 0 && (raw_exp == 0 || !Layout::implicit_digit)) {
+  if (detail::isZeroWord(raw_sig) && (raw_exp == 0 || !Layout::implicit_digit)) {
     u.category = ValueCategory::Zero;
     // When the Number has no negative zero, a sign-bit-set zero
     // pattern is a redundant encoding of +0 (the fnuz NaN case was
@@ -231,7 +213,8 @@ unpack(typename T::storage_type bits) {
     if (raw_exp == 0)
       u.significand = raw_sig;
     else
-      u.significand = raw_sig | (Storage{1} << Layout::sig_bits);
+      u.significand =
+          detail::orWords(raw_sig, detail::wordBit<Storage>(Layout::sig_bits));
   } else {
     // Leading digit is stored explicitly. Canonicalize the
     // non-canonical encodings so downstream arithmetic can rely on
@@ -243,14 +226,14 @@ unpack(typename T::storage_type bits) {
     constexpr int JPos = Layout::sig_bits - 1;
     Storage sig = raw_sig;
     int exp = static_cast<int>(raw_exp);
-    const bool jbit = (sig >> JPos) != 0;
+    const bool jbit = detail::testWordBit(sig, JPos);
     if (exp > 0 && !jbit) {
-      int shift = JPos - detail::msbPos(sig);
+      int shift = JPos - detail::wordTopBit(sig);
       if (exp > shift) {
         exp -= shift;
-        sig <<= shift;
+        sig = detail::shiftWordLeft(sig, shift);
       } else {
-        sig <<= (exp - 1);
+        sig = detail::shiftWordLeft(sig, exp - 1);
         exp = 0;
       }
     } else if (exp == 0 && jbit) {
@@ -280,27 +263,30 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
                 "in the type system but not yet implemented");
 
   constexpr int TotalBits = Layout::total_bits;
-  constexpr Storage ExpMax = (Storage{1} << Layout::exp_bits) - 1;
-  constexpr Storage SigMask = (Storage{1} << Layout::sig_bits) - 1;
+  constexpr std::uint64_t ExpMax = (std::uint64_t{1} << Layout::exp_bits) - 1;
 
   // ---------- Special values ----------
 
   if (u.category == ValueCategory::NaN) {
     if constexpr (Number::nan_encoding == NanEncoding::TrapValue) {
-      return Storage{1} << (TotalBits - 1);
+      return detail::wordBit<Storage>(TotalBits - 1);
     } else if constexpr (Number::nan_encoding ==
                          NanEncoding::NegativeZeroBitPattern) {
-      return Storage{1} << Layout::sign_offset;
+      return detail::wordBit<Storage>(Layout::sign_offset);
     } else if constexpr (Number::nan_encoding ==
                          NanEncoding::ReservedExponent) {
       // Canonical qNaN: exp=all-ones, MSB of stored sig set.
-      Storage nan_bits = ExpMax << Layout::exp_offset;
+      Storage nan_bits = detail::shiftWordLeft(
+          detail::wordFromUint<Storage>(ExpMax), Layout::exp_offset);
       if constexpr (Layout::implicit_digit) {
-        nan_bits |= Storage{1} << (Layout::exp_offset - 1);
+        nan_bits = detail::orWords(
+            nan_bits, detail::wordBit<Storage>(Layout::exp_offset - 1));
       } else {
-        constexpr Storage JBit = Storage{1} << (Layout::sig_bits - 1);
-        constexpr Storage QBit = Storage{1} << (Layout::sig_bits - 2);
-        nan_bits |= JBit | QBit;
+        nan_bits = detail::orWords(
+            nan_bits,
+            detail::orWords(
+                detail::wordBit<Storage>(Layout::sig_offset + Layout::sig_bits - 1),
+                detail::wordBit<Storage>(Layout::sig_offset + Layout::sig_bits - 2)));
       }
       return nan_bits;
     } else {
@@ -308,24 +294,27 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
       // violation — the format cannot represent it. Callers route
       // around this (e.g. Relaxed formats never produce NaN).
       // Return +0 deterministically rather than UB.
-      return Storage{0};
+      return Storage{};
     }
   }
 
   if (u.category == ValueCategory::Infinity) {
     if constexpr (Number::inf_encoding == InfEncoding::IntegerExtremes) {
-      constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
+      const Storage PosInf = detail::wordOnes<Storage>(TotalBits - 1);
       if (u.sign)
-        return detail::negateWord(PosInf, TotalBits);
+        return detail::negateWordBits(PosInf, TotalBits);
       return PosInf;
     } else if constexpr (Number::inf_encoding == InfEncoding::ReservedExponent) {
-      Storage inf_bits = ExpMax << Layout::exp_offset;
+      Storage inf_bits = detail::shiftWordLeft(
+          detail::wordFromUint<Storage>(ExpMax), Layout::exp_offset);
       if constexpr (!Layout::implicit_digit) {
-        constexpr Storage JBit = Storage{1} << (Layout::sig_bits - 1);
-        inf_bits |= JBit;
+        inf_bits = detail::orWords(
+            inf_bits,
+            detail::wordBit<Storage>(Layout::sig_offset + Layout::sig_bits - 1));
       }
       if (u.sign)
-        inf_bits |= Storage{1} << Layout::sign_offset;
+        inf_bits =
+            detail::orWords(inf_bits, detail::wordBit<Storage>(Layout::sign_offset));
       return inf_bits;
     } else {
       // InfEncoding::None: an Infinity category is a caller
@@ -333,44 +322,42 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
       // Callers that may face an Inf-into-no-Inf format must route
       // through packInfOrSaturate (round_pack.hpp) instead. Return
       // +0 deterministically rather than UB.
-      return Storage{0};
+      return Storage{};
     }
   }
 
   if (u.category == ValueCategory::Zero) {
-    Storage zero_bits = 0;
     if (u.sign && Number::negative_zero == NegativeZero::Exists) {
       if constexpr (Number::value_sign == SignMethod::Explicit)
-        zero_bits |= Storage{1} << Layout::sign_offset;
+        return detail::wordBit<Storage>(Layout::sign_offset);
       // RadixComplement has no negative zero (enforced by static_assert
       // on FloatingPoint); DiminishedRadixComplement not covered here.
     }
-    return zero_bits;
+    return Storage{};
   }
 
   // ---------- Finite ----------
 
-  Storage stored_sig;
-  if constexpr (Layout::implicit_digit) {
-    // Strip the implicit leading digit (if the value is normal;
-    // denormals have leading 0 and don't need stripping).
-    stored_sig = u.significand & SigMask;
-  } else {
-    stored_sig = u.significand & SigMask;
-  }
+  // Strip the implicit leading digit (if the value is normal;
+  // denormals have leading 0 and don't need stripping). Explicit-J
+  // formats store the whole significand.
+  Storage stored_sig =
+      detail::andWords(u.significand, detail::wordOnes<Storage>(Layout::sig_bits));
 
-  Storage bits =
-      (Storage(u.biased_exp) << Layout::exp_offset) |
-      (stored_sig << Layout::sig_offset);
+  Storage bits = detail::orWords(
+      detail::shiftWordLeft(
+          detail::wordFromUint<Storage>(std::uint64_t(u.biased_exp)),
+          Layout::exp_offset),
+      detail::shiftWordLeft(stored_sig, Layout::sig_offset));
 
   if constexpr (Number::value_sign == SignMethod::Explicit) {
     if (u.sign)
-      bits |= Storage{1} << Layout::sign_offset;
+      bits = detail::orWords(bits, detail::wordBit<Storage>(Layout::sign_offset));
     return bits;
   } else if constexpr (Number::value_sign == SignMethod::RadixComplement) {
     if (u.sign)
-      bits = detail::negateWord(bits, TotalBits);
-    return detail::maskToWidth(bits, TotalBits);
+      bits = detail::negateWordBits(bits, TotalBits);
+    return detail::andWords(bits, detail::wordOnes<Storage>(TotalBits));
   } else {
     return bits;
   }

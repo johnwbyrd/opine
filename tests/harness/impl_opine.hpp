@@ -39,10 +39,16 @@ template <typename FloatType> struct OpineAdapter {
     case Op::Sub: return wrap(opine::sub<FloatType>(A, B));
     case Op::Mul: return wrap(opine::mul<FloatType>(A, B));
     case Op::Div: return wrap(opine::div<FloatType>(A, B));
-    case Op::Eq: return {BitsType(opine::eq<FloatType>(A, B) ? 1 : 0), 0};
-    case Op::Lt: return {BitsType(opine::lt<FloatType>(A, B) ? 1 : 0), 0};
-    case Op::Le: return {BitsType(opine::le<FloatType>(A, B) ? 1 : 0), 0};
-    default: return {BitsType{0}, 0};
+    case Op::Eq:
+      return {opine::detail::wordFromUint<BitsType>(
+                  opine::eq<FloatType>(A, B) ? 1 : 0), 0};
+    case Op::Lt:
+      return {opine::detail::wordFromUint<BitsType>(
+                  opine::lt<FloatType>(A, B) ? 1 : 0), 0};
+    case Op::Le:
+      return {opine::detail::wordFromUint<BitsType>(
+                  opine::le<FloatType>(A, B) ? 1 : 0), 0};
+    default: return {BitsType{}, 0};
     }
   }
 

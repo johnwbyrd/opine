@@ -15,8 +15,11 @@
 //   - Bundle the storage_type, compute_format, and SWAR lane count
 //     as compile-time constants derived from the axes.
 
+#include <cstdint>
+
 #include "opine/core/bits.hpp"
 #include "opine/core/compute_format.hpp"
+#include "opine/core/digits.hpp"
 #include "opine/core/exceptions.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/number.hpp"
@@ -24,6 +27,22 @@
 #include "opine/core/rounding.hpp"
 
 namespace opine {
+
+// Storage selection: scalar bits_t up to 128 bits (every compiler
+// has one), a DigitVector of 64-bit limbs beyond that (no portable
+// scalar exists — and the same limb-array path runs on every
+// compiler, so it is tested everywhere rather than only where
+// _BitInt happens to reach).
+namespace detail {
+template <int N> struct StorageFor {
+  using type = bits_t<N>;
+};
+template <int N>
+  requires(N > 128)
+struct StorageFor<N> {
+  using type = DigitVector<std::uint64_t, (N + 63) / 64>;
+};
+} // namespace detail
 
 template <typename Number, typename Layout,
           typename Rounding = rounding::Default,
@@ -38,7 +57,7 @@ struct Type {
   using exceptions = Exceptions;
   using platform = Platform;
 
-  using storage_type = bits_t<Layout::total_bits>;
+  using storage_type = typename detail::StorageFor<Layout::total_bits>::type;
 
   using compute_format = DefaultComputeFormat<Number, Rounding>;
 
@@ -85,9 +104,8 @@ using float128 = IEEE754Type<15, 112>;
 
 // IEEE 754 binary{k} for k ≥ 128: p = k − round(4·log2 k) + 13,
 // exponent width w = k − p. Arithmetic runs in the multi-limb digit
-// geometry at any width; storage is currently the scalar bits_t<k>,
-// which exists on Clang (_BitInt) at these widths — GCC storage
-// waits on the multi-word Layout storage_type.
+// geometry and storage is a DigitVector of 64-bit limbs — both
+// compilers, no _BitInt anywhere.
 using float256 = IEEE754Type<19, 236>;   // p = 237
 using float512 = IEEE754Type<23, 488>;   // p = 489
 using float1024 = IEEE754Type<27, 996>;  // p = 997

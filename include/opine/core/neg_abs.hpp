@@ -30,6 +30,7 @@
 //     sign-bit transform, so no special handling is needed.
 //   None — no NaN inputs to worry about.
 
+#include "opine/core/digits.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/number.hpp"
 
@@ -49,28 +50,12 @@ constexpr bool isFixedNanPattern(typename T::storage_type bits) {
   constexpr int TotalBits = Fmt::total_bits;
 
   if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
-    constexpr Storage Trap = Storage{1} << (TotalBits - 1);
-    return bits == Trap;
+    return bits == wordBit<Storage>(TotalBits - 1);
   } else if constexpr (Num::nan_encoding ==
                        NanEncoding::NegativeZeroBitPattern) {
-    constexpr Storage NanBits = Storage{1} << Fmt::sign_offset;
-    return bits == NanBits;
+    return bits == wordBit<Storage>(Fmt::sign_offset);
   }
   return false;
-}
-
-// Mask a value to Layout::total_bits width, no-op when the storage
-// type has no excess.
-template <typename T>
-constexpr typename T::storage_type
-maskToTotalBits(typename T::storage_type bits) {
-  using Storage = typename T::storage_type;
-  constexpr int TotalBits = T::layout::total_bits;
-  if constexpr (TotalBits < int(sizeof(Storage) * 8)) {
-    constexpr Storage Mask = (Storage{1} << TotalBits) - 1;
-    return bits & Mask;
-  }
-  return bits;
 }
 
 } // namespace detail
@@ -83,17 +68,17 @@ constexpr typename T::storage_type neg(typename T::storage_type bits) {
   using Fmt = typename T::layout;
   using Num = typename T::number;
   using Storage = typename T::storage_type;
-  constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
+  constexpr int TotalBits = Fmt::total_bits;
 
   if (detail::isFixedNanPattern<T>(bits))
     return bits;
 
   if constexpr (Num::value_sign == SignMethod::Explicit)
-    return bits ^ SignBit;
+    return detail::xorWords(bits, detail::wordBit<Storage>(Fmt::sign_offset));
   else if constexpr (Num::value_sign == SignMethod::RadixComplement)
-    return detail::maskToTotalBits<T>((~bits) + Storage{1});
+    return detail::negateWordBits(bits, TotalBits);
   else if constexpr (Num::value_sign == SignMethod::DiminishedRadixComplement)
-    return detail::maskToTotalBits<T>(~bits);
+    return detail::wordNot(bits, TotalBits);
   return bits;
 }
 
@@ -106,23 +91,22 @@ constexpr typename T::storage_type abs(typename T::storage_type bits) {
   using Num = typename T::number;
   using Storage = typename T::storage_type;
   constexpr int TotalBits = Fmt::total_bits;
-  constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
 
   if (detail::isFixedNanPattern<T>(bits))
     return bits;
 
   if constexpr (Num::value_sign == SignMethod::Explicit) {
-    return bits & ~SignBit;
+    return detail::andWords(
+        bits, detail::wordNot(detail::wordBit<Storage>(Fmt::sign_offset),
+                              TotalBits));
   } else if constexpr (Num::value_sign == SignMethod::RadixComplement) {
-    constexpr Storage MsbMask = Storage{1} << (TotalBits - 1);
-    if (bits & MsbMask)
-      return detail::maskToTotalBits<T>((~bits) + Storage{1});
+    if (detail::testWordBit(bits, TotalBits - 1))
+      return detail::negateWordBits(bits, TotalBits);
     return bits;
   } else if constexpr (Num::value_sign ==
                        SignMethod::DiminishedRadixComplement) {
-    constexpr Storage MsbMask = Storage{1} << (TotalBits - 1);
-    if (bits & MsbMask)
-      return detail::maskToTotalBits<T>(~bits);
+    if (detail::testWordBit(bits, TotalBits - 1))
+      return detail::wordNot(bits, TotalBits);
     return bits;
   }
   return bits;

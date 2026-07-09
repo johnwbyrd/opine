@@ -33,7 +33,9 @@ namespace opine::testing {
 template <typename BitsType>
 void printHex(FILE *Out, BitsType Val, int Width) {
   for (int I = Width - 1; I >= 0; --I) {
-    int Nibble = static_cast<int>((Val >> (I * 4)) & BitsType{0xF});
+    int Nibble = int(opine::detail::lowUint64(
+                         opine::detail::shiftWordRight(Val, I * 4)) &
+                     0xF);
     std::fputc("0123456789ABCDEF"[Nibble], Out);
   }
 }
@@ -258,10 +260,14 @@ template <typename BitsType, int TotalBits> struct RandomPairs {
     constexpr int ChunkBits = 64;
 
     auto Gen = [&]() -> BitsType {
-      BitsType Val = 0;
+      BitsType Val{};
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
-        Val |= BitsType(Rng()) << (I * ChunkBits);
-      return Val & opine::maskLow<BitsType>(TotalBits);
+        Val = opine::detail::orWords(
+            Val, opine::detail::shiftWordLeft(
+                     opine::detail::wordFromUint<BitsType>(Rng()),
+                     I * ChunkBits));
+      return opine::detail::andWords(Val,
+                                     opine::detail::wordOnes<BitsType>(TotalBits));
     };
 
     for (int I = 0; I < Count; ++I)
@@ -300,10 +306,14 @@ template <typename BitsType, int TotalBits> struct RandomSingles {
     constexpr int ChunkBits = 64;
 
     auto Gen = [&]() -> BitsType {
-      BitsType Val = 0;
+      BitsType Val{};
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
-        Val |= BitsType(Rng()) << (I * ChunkBits);
-      return Val & opine::maskLow<BitsType>(TotalBits);
+        Val = opine::detail::orWords(
+            Val, opine::detail::shiftWordLeft(
+                     opine::detail::wordFromUint<BitsType>(Rng()),
+                     I * ChunkBits));
+      return opine::detail::andWords(Val,
+                                     opine::detail::wordOnes<BitsType>(TotalBits));
     };
 
     for (int I = 0; I < Count; ++I)
@@ -334,10 +344,14 @@ template <typename BitsType, int TotalBits> struct RandomTriples {
     constexpr int ChunkBits = 64;
 
     auto Gen = [&]() -> BitsType {
-      BitsType Val = 0;
+      BitsType Val{};
       for (int I = 0; I < (TotalBits + ChunkBits - 1) / ChunkBits; ++I)
-        Val |= BitsType(Rng()) << (I * ChunkBits);
-      return Val & opine::maskLow<BitsType>(TotalBits);
+        Val = opine::detail::orWords(
+            Val, opine::detail::shiftWordLeft(
+                     opine::detail::wordFromUint<BitsType>(Rng()),
+                     I * ChunkBits));
+      return opine::detail::andWords(Val,
+                                     opine::detail::wordOnes<BitsType>(TotalBits));
     };
 
     for (int I = 0; I < Count; ++I)
@@ -386,27 +400,31 @@ std::vector<typename T::storage_type> structuralValues() {
   constexpr int M = Fmt::sig_bits;
   constexpr int Bias = Num::exponent_bias;
   constexpr int TotalBits = Fmt::total_bits;
-  constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
-  constexpr Storage ExpMax = (Storage{1} << E) - 1;
-  constexpr Storage SigMask = (Storage{1} << M) - 1;
+  const Storage SignBit = opine::detail::wordBit<Storage>(Fmt::sign_offset);
+  const Storage SigMask = opine::detail::wordOnes<Storage>(M);
   constexpr int MaxBiasedExp =
       (Num::nan_encoding == NanEncoding::ReservedExponent ||
        Num::inf_encoding == InfEncoding::ReservedExponent)
-          ? (int(ExpMax) - 1)
-          : int(ExpMax);
+          ? ((1 << E) - 2)
+          : ((1 << E) - 1);
+  constexpr std::uint64_t ExpMax = (std::uint64_t{1} << E) - 1;
 
-  auto widthMask = []() -> Storage { return maskLow<Storage>(TotalBits); };
+  // A biased exponent placed in its field.
+  auto expField = [](std::uint64_t e) -> Storage {
+    return opine::detail::shiftWordLeft(
+        opine::detail::wordFromUint<Storage>(e), Fmt::exp_offset);
+  };
 
   // Encoding-correct negation: sign-bit set for Explicit, whole-word
   // two's complement for RadixComplement, one's complement for DRC.
   auto negate = [&](Storage x) -> Storage {
     if constexpr (Num::value_sign == SignMethod::Explicit) {
-      return x | SignBit;
+      return opine::detail::orWords(x, SignBit);
     } else if constexpr (Num::value_sign == SignMethod::RadixComplement) {
-      return ((~x) + Storage{1}) & widthMask();
+      return opine::detail::negateWordBits(x, TotalBits);
     } else if constexpr (Num::value_sign ==
                          SignMethod::DiminishedRadixComplement) {
-      return (~x) & widthMask();
+      return opine::detail::wordNot(x, TotalBits);
     }
     return x;
   };
@@ -415,36 +433,39 @@ std::vector<typename T::storage_type> structuralValues() {
   auto add = [&](Storage x) { v.push_back(x); };
   auto addPair = [&](Storage pos) {
     v.push_back(pos);
-    if (pos != Storage{0})
+    if (!opine::detail::isZeroWord(pos))
       v.push_back(negate(pos));
   };
 
   // ---- Zero(s) ----
-  add(Storage{0});
+  add(Storage{});
   if constexpr (Num::negative_zero == NegativeZero::Exists)
-    add(negate(Storage{0}));
+    add(negate(Storage{}));
 
   // ---- Infinity per inf_encoding ----
   if constexpr (Num::inf_encoding == InfEncoding::ReservedExponent) {
-    Storage pos_inf = Storage(ExpMax) << Fmt::exp_offset;
+    Storage pos_inf = expField(ExpMax);
     if constexpr (!Fmt::implicit_digit)
-      pos_inf |= Storage{1} << (M - 1); // J-bit
+      pos_inf = opine::detail::orWords(
+          pos_inf, opine::detail::wordBit<Storage>(M - 1)); // J-bit
     addPair(pos_inf);
   } else if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-    Storage pos_inf = (Storage{1} << (TotalBits - 1)) - Storage{1};
-    addPair(pos_inf);
+    addPair(opine::detail::wordOnes<Storage>(TotalBits - 1));
   }
 
   // ---- NaN per nan_encoding ----
   if constexpr (Num::nan_encoding == NanEncoding::ReservedExponent) {
-    Storage qnan_sig = Storage{1} << (M - 1);
+    Storage qnan_sig = opine::detail::wordBit<Storage>(M - 1);
     if constexpr (!Fmt::implicit_digit)
-      qnan_sig |= Storage{1} << (M - 2); // Q bit for explicit-J
-    add((Storage(ExpMax) << Fmt::exp_offset) | qnan_sig); // qNaN
-    add((Storage(ExpMax) << Fmt::exp_offset) | Storage{1}); // sNaN
-    add(SignBit | ((Storage(ExpMax) << Fmt::exp_offset) | qnan_sig));
+      qnan_sig = opine::detail::orWords(
+          qnan_sig, opine::detail::wordBit<Storage>(M - 2)); // Q bit
+    add(opine::detail::orWords(expField(ExpMax), qnan_sig)); // qNaN
+    add(opine::detail::orWords(expField(ExpMax),
+                               opine::detail::wordBit<Storage>(0))); // sNaN
+    add(opine::detail::orWords(
+        SignBit, opine::detail::orWords(expField(ExpMax), qnan_sig)));
   } else if constexpr (Num::nan_encoding == NanEncoding::TrapValue) {
-    add(Storage{1} << (TotalBits - 1));
+    add(opine::detail::wordBit<Storage>(TotalBits - 1));
   } else if constexpr (Num::nan_encoding ==
                        NanEncoding::NegativeZeroBitPattern) {
     add(SignBit);
@@ -452,38 +473,39 @@ std::vector<typename T::storage_type> structuralValues() {
 
   // ---- Subnormal boundaries (implicit-digit formats only) ----
   if constexpr (Fmt::implicit_digit) {
-    addPair(Storage{1});       // min subnormal
-    addPair(SigMask);           // max subnormal
-    addPair(SigMask >> 1);      // mid subnormal (for coverage of the range)
+    addPair(opine::detail::wordBit<Storage>(0)); // min subnormal
+    addPair(SigMask);                            // max subnormal
+    addPair(opine::detail::shiftWordRight(SigMask, 1)); // mid subnormal
   }
 
   // ---- Normal boundaries ----
-  Storage min_normal = Storage{1} << M;
+  Storage min_normal = opine::detail::wordBit<Storage>(M);
   addPair(min_normal);
-  addPair(min_normal + Storage{1}); // min normal + 1 ULP
+  addPair(opine::detail::wordAddSmall(min_normal, 1)); // min normal + 1 ULP
 
-  Storage max_finite;
+  Storage max_finite{};
   if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-    Storage pos_inf = (Storage{1} << (TotalBits - 1)) - Storage{1};
-    max_finite = pos_inf - Storage{1};
+    max_finite = opine::detail::wordSubSmall(
+        opine::detail::wordOnes<Storage>(TotalBits - 1), 1);
   } else {
-    max_finite = (Storage(MaxBiasedExp) << Fmt::exp_offset) | SigMask;
+    max_finite = opine::detail::orWords(
+        expField(std::uint64_t(MaxBiasedExp)), SigMask);
   }
   addPair(max_finite);
-  addPair(max_finite - Storage{1}); // max finite - 1 ULP
+  addPair(opine::detail::wordSubSmall(max_finite, 1)); // max finite - 1 ULP
 
   // ---- Values around 1.0 ----
-  Storage one = Storage(Bias) << Fmt::exp_offset;
+  Storage one = expField(std::uint64_t(Bias));
   addPair(one);
-  addPair(one + Storage{1});
-  if (one > 0)
-    addPair(one - Storage{1});
+  addPair(opine::detail::wordAddSmall(one, 1));
+  if (!opine::detail::isZeroWord(one))
+    addPair(opine::detail::wordSubSmall(one, 1));
 
   // ---- 2.0 and 0.5 ----
   if (Bias + 1 <= MaxBiasedExp)
-    addPair(Storage(Bias + 1) << Fmt::exp_offset);
+    addPair(expField(std::uint64_t(Bias + 1)));
   if (Bias >= 1)
-    addPair(Storage(Bias - 1) << Fmt::exp_offset);
+    addPair(expField(std::uint64_t(Bias - 1)));
 
   // ---- Sampled biased exponents (positive representative) ----
   // Cross-products explode if we put every exponent in the
@@ -494,16 +516,18 @@ std::vector<typename T::storage_type> structuralValues() {
     int step = MaxBiasedExp / 16;
     if (step < 1) step = 1;
     for (int e = 1; e <= MaxBiasedExp; e += step)
-      addPair(Storage(e) << Fmt::exp_offset);
+      addPair(expField(std::uint64_t(e)));
   }
 
   // ---- Machine epsilon (2^(1-precision)) ----
   int eps_exp = Bias - (Fmt::implicit_digit ? M : (M - 1));
   if (eps_exp >= 1 && eps_exp <= MaxBiasedExp)
-    add(Storage(eps_exp) << Fmt::exp_offset);
+    add(expField(std::uint64_t(eps_exp)));
 
   // ---- Dedup ----
-  std::sort(v.begin(), v.end());
+  std::sort(v.begin(), v.end(), [](const Storage &a, const Storage &b) {
+    return opine::detail::wordLess(a, b);
+  });
   v.erase(std::unique(v.begin(), v.end()), v.end());
 
   return v;
@@ -530,18 +554,26 @@ template <typename T, int K> struct ExponentStratifiedSingles {
     constexpr int E = Fmt::exp_bits;
     constexpr long ExpCount = 1L << E;
     const long Step = (ExpCount + MaxExponents - 1) / MaxExponents; // >= 1
-    constexpr Storage SigMask = (Storage{1} << Fmt::sig_bits) - 1;
-    constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
+    const Storage SigMask = opine::detail::wordOnes<Storage>(Fmt::sig_bits);
+    const Storage SignBit = opine::detail::wordBit<Storage>(Fmt::sign_offset);
 
     std::mt19937_64 Rng(Seed);
     auto emit = [&](long e) {
       for (int k = 0; k < K; ++k) {
-        Storage sig = Storage(Rng());
+        Storage sig = opine::detail::wordFromUint<Storage>(Rng());
         for (int c = 64; c < Fmt::sig_bits; c += 64)
-          sig |= Storage(Rng()) << c;
-        sig &= SigMask;
-        Storage sign = (Rng() & 1u) ? SignBit : Storage{0};
-        Callback(Storage(sign | (Storage(e) << Fmt::exp_offset) | sig));
+          sig = opine::detail::orWords(
+              sig, opine::detail::shiftWordLeft(
+                       opine::detail::wordFromUint<Storage>(Rng()), c));
+        sig = opine::detail::andWords(sig, SigMask);
+        Storage sign = (Rng() & 1u) ? SignBit : Storage{};
+        Callback(opine::detail::orWords(
+            sign, opine::detail::orWords(
+                      opine::detail::shiftWordLeft(
+                          opine::detail::wordFromUint<Storage>(
+                              std::uint64_t(e)),
+                          Fmt::exp_offset),
+                      sig)));
       }
     };
     for (long e = 0; e < ExpCount; e += Step)
@@ -606,17 +638,17 @@ template <typename FloatType> struct NanAwareBitExact {
     using Fmt = typename FloatType::layout;
     using Enc = typename FloatType::number;
     if constexpr (Enc::nan_encoding == NanEncoding::ReservedExponent) {
-      constexpr BitsType ExpMax = (BitsType{1} << Fmt::exp_bits) - 1;
-      BitsType Exp = (Bits >> Fmt::exp_offset) & ExpMax;
-      BitsType Mant = Bits & ((BitsType{1} << Fmt::sig_bits) - 1);
-      return Exp == ExpMax && Mant != 0;
+      constexpr std::uint64_t ExpMax = (std::uint64_t{1} << Fmt::exp_bits) - 1;
+      std::uint64_t Exp =
+          opine::detail::extractIntField(Bits, Fmt::exp_offset, Fmt::exp_bits);
+      BitsType Mant = opine::detail::andWords(
+          Bits, opine::detail::wordOnes<BitsType>(Fmt::sig_bits));
+      return Exp == ExpMax && !opine::detail::isZeroWord(Mant);
     } else if constexpr (Enc::nan_encoding == NanEncoding::TrapValue) {
-      constexpr BitsType TrapVal = BitsType{1} << (Fmt::total_bits - 1);
-      return Bits == TrapVal;
+      return Bits == opine::detail::wordBit<BitsType>(Fmt::total_bits - 1);
     } else if constexpr (Enc::nan_encoding ==
                          NanEncoding::NegativeZeroBitPattern) {
-      constexpr BitsType NanBits = BitsType{1} << (Fmt::total_bits - 1);
-      return Bits == NanBits;
+      return Bits == opine::detail::wordBit<BitsType>(Fmt::total_bits - 1);
     } else {
       return false;
     }

@@ -15,14 +15,9 @@
 
 #include <opine/opine.hpp>
 
-// binary256 / binary512 / binary1024 need Clang for the scalar
-// storage type (_BitInt past 128 bits). GCC still runs BBP at
-// float128 and below.
-#if defined(__clang__)
+// binary256 / binary512 / binary1024 store their bits in a
+// DigitVector of limbs — available on every compiler.
 #define HAS_WIDE 1
-#else
-#define HAS_WIDE 0
-#endif
 
 template <typename T>
 static typename T::storage_type computeBbp(int terms) {

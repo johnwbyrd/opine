@@ -102,7 +102,7 @@ constexpr auto addWithSign(typename T::storage_type a,
   int eb = (ub.biased_exp == 0) ? 1 : ub.biased_exp;
 
   // Order so ua carries the larger magnitude.
-  if (ea < eb || (ea == eb && ua.significand < ub.significand)) {
+  if (ea < eb || (ea == eb && wordLess(ua.significand, ub.significand))) {
     UnpackedFloat<Storage> tmp = ua;
     ua = ub;
     ub = tmp;
