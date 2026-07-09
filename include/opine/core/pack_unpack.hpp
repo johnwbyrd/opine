@@ -87,6 +87,9 @@ unpack(typename T::storage_type bits) {
 
   static_assert(Number::is_composite,
                 "unpack currently supports FloatingPoint composites only");
+  static_assert(Number::exponent_base == 2,
+                "non-binary exponent bases (IBM hex, decimal) are declared "
+                "in the type system but not yet implemented");
 
   constexpr int TotalBits = Layout::total_bits;
   constexpr Storage ExpMax = (Storage{1} << Layout::exp_bits) - 1;
@@ -272,6 +275,9 @@ pack(const UnpackedFloat<typename T::storage_type> &u) {
 
   static_assert(Number::is_composite,
                 "pack currently supports FloatingPoint composites only");
+  static_assert(Number::exponent_base == 2,
+                "non-binary exponent bases (IBM hex, decimal) are declared "
+                "in the type system but not yet implemented");
 
   constexpr int TotalBits = Layout::total_bits;
   constexpr Storage ExpMax = (Storage{1} << Layout::exp_bits) - 1;

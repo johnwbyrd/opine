@@ -42,9 +42,17 @@ template <typename Wide> constexpr int msbPos(Wide value) {
 }
 
 // Decide whether to round the pre-rounding integer significand up.
+// ToNearestTiesAway and ToOdd are declared in rounding.hpp but not
+// wired through here or the oracle yet — reject them rather than
+// silently truncate.
 template <typename Rnd>
 constexpr bool shouldRoundUp(bool lsb, bool guard, bool round_bit, bool sticky,
                              bool negative) {
+  static_assert(std::is_same_v<Rnd, rounding::TowardZero> ||
+                    std::is_same_v<Rnd, rounding::ToNearestTiesToEven> ||
+                    std::is_same_v<Rnd, rounding::TowardPositive> ||
+                    std::is_same_v<Rnd, rounding::TowardNegative>,
+                "this Rounding policy is declared but not yet implemented");
   const bool any_low = guard || round_bit || sticky;
   if constexpr (std::is_same_v<Rnd, rounding::TowardZero>) {
     return false;
