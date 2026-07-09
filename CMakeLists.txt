@@ -40,3 +40,6 @@ endif()
 # Tests
 enable_testing()
 add_subdirectory(tests)
+
+# Examples: showcase programs, always built.
+add_subdirectory(examples)
