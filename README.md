@@ -64,6 +64,11 @@ auto third = fromNative<fp8>(1.0f / 3.0f);  // 0x2B: 0.34375
 float f    = toFloat<fp8>(third);
 ```
 
+For longer runnable programs — the rbj signed-integer-sort demo, a
+cross-format quantization tour, the §7.4 overflow matrix, a
+compile-time axis table across all predefined Types — see
+[`examples/`](examples/README.md).
+
 ## Axes
 
 `Type<Number, Layout, Rounding, Exceptions, Platform>` — Box is
@@ -228,6 +233,7 @@ tests/
 docs/
   design/               — Six-axis architecture, TDD methodology, format catalog
   reference/            — Papers (IEEE 754-2019 summary), reference C sources
+examples/               — Eight self-contained showcase programs
 ```
 
 ## Design docs
