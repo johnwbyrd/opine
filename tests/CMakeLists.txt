@@ -109,6 +109,13 @@ if(OPINE_HAS_ORACLE)
     target_link_libraries(test_opine_string PRIVATE opine MPFR::MPFR doctest_with_main)
     target_include_directories(test_opine_string PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_string COMMAND test_opine_string)
+
+    # §5 operations: remaining predicates, classification, min/max
+    # family, nextUp/nextDown, copySign (exhaustive FP8 + f64 libm)
+    add_executable(test_opine_ops oracle/test_opine_ops.cpp)
+    target_link_libraries(test_opine_ops PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_ops PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_ops COMMAND test_opine_ops)
 endif()
 
 # TestFloat conformance shim (TDD step 5): OPINE vs SoftFloat over

@@ -112,6 +112,43 @@ constexpr typename T::storage_type abs(typename T::storage_type bits) {
   return bits;
 }
 
+// -----------------------------------------------------------------
+// copySign — §5.5.1, non-computational like neg/abs
+// -----------------------------------------------------------------
+// x with y's sign. Fixed-pattern NaNs (trap, fnuz) short-circuit as
+// in neg; a ReservedExponent NaN survives the sign transform with
+// its payload intact.
+template <typename T>
+constexpr typename T::storage_type copySign(typename T::storage_type x,
+                                            typename T::storage_type y) {
+  using Fmt = typename T::layout;
+  using Num = typename T::number;
+  using Storage = typename T::storage_type;
+  constexpr int TotalBits = Fmt::total_bits;
+
+  const bool want = [&] {
+    if constexpr (Num::value_sign == SignMethod::Explicit)
+      return detail::testWordBit(y, Fmt::sign_offset);
+    else
+      return detail::testWordBit(y, TotalBits - 1);
+  }();
+
+  if (detail::isFixedNanPattern<T>(x))
+    return x;
+
+  if constexpr (Num::value_sign == SignMethod::Explicit) {
+    const Storage cleared = detail::andWords(
+        x, detail::wordNot(detail::wordBit<Storage>(Fmt::sign_offset),
+                           TotalBits));
+    return want ? detail::orWords(cleared,
+                                  detail::wordBit<Storage>(Fmt::sign_offset))
+                : cleared;
+  } else {
+    const bool have = detail::testWordBit(x, TotalBits - 1);
+    return have == want ? x : neg<T>(x);
+  }
+}
+
 } // namespace opine
 
 #endif // OPINE_CORE_NEG_ABS_HPP

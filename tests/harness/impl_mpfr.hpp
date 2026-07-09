@@ -806,16 +806,10 @@ uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
     mpfr_prec_round(Y, mpfr_prec_t(P),
                     mpfrSignedMode<typename FloatType::rounding>());
 
-    // Largest finite value, decoded from its bit pattern (for
-    // IntegerExtremes encodings the all-ones pattern is +Inf, so
-    // max finite is one below it).
-    BitsType MaxBits{};
-    if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
-      MaxBits = opine::detail::wordSubSmall(
-          opine::detail::wordOnes<BitsType>(Fmt::total_bits - 1), 1);
-    } else {
-      MaxBits = opine::detail::packMaxFinite<FloatType>(false);
-    }
+    // Largest finite value, decoded from its bit pattern.
+    // packMaxFinite is IntegerExtremes-aware (the all-ones pattern
+    // is +Inf there; max finite sits one below it).
+    BitsType MaxBits = opine::detail::packMaxFinite<FloatType>(false);
     MpfrFloat MaxF = decodeToMpfr<FloatType>(MaxBits);
 
     if (mpfr_cmpabs(Y, MaxF) > 0)

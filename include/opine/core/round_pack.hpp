@@ -145,6 +145,9 @@ constexpr typename T::storage_type packMaxFinite(bool sign) {
   u.sign = sign;
   u.biased_exp = MaxBiasedExp;
   u.significand = wordOnes<Storage>(SigBits);
+  if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes)
+    // The all-ones pattern IS +Inf; max finite sits one below it.
+    u.significand = wordSubSmall(u.significand, 1);
   return pack<T>(u);
 }
 

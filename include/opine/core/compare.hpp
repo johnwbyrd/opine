@@ -113,6 +113,33 @@ constexpr bool le(typename T::storage_type a, typename T::storage_type b) {
   return detail::compareUnpacked(ua, ub) <= 0;
 }
 
+// -----------------------------------------------------------------
+// gt / ge / ne / unordered — the rest of the quiet predicate set
+// -----------------------------------------------------------------
+// ne and unordered are true when a NaN is involved (they are the
+// negations of eq and of "comparable"); gt/ge mirror lt/le.
+template <typename T>
+constexpr bool gt(typename T::storage_type a, typename T::storage_type b) {
+  return lt<T>(b, a);
+}
+
+template <typename T>
+constexpr bool ge(typename T::storage_type a, typename T::storage_type b) {
+  return le<T>(b, a);
+}
+
+template <typename T>
+constexpr bool ne(typename T::storage_type a, typename T::storage_type b) {
+  return !eq<T>(a, b);
+}
+
+template <typename T>
+constexpr bool unordered(typename T::storage_type a,
+                         typename T::storage_type b) {
+  return detail::unpackOperand<T>(a).category == ValueCategory::NaN ||
+         detail::unpackOperand<T>(b).category == ValueCategory::NaN;
+}
+
 } // namespace opine
 
 #endif // OPINE_CORE_COMPARE_HPP
