@@ -27,6 +27,12 @@ set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(doctest)
 unset(CMAKE_POLICY_VERSION_MINIMUM)
 
+# DigitVector primitives: exhaustive small-limb sweeps and wide-width
+# invariants everywhere; randomized differential vs _BitInt on Clang.
+add_executable(test_digits unit/test_digits.cpp)
+target_link_libraries(test_digits PRIVATE opine doctest_with_main)
+add_test(NAME test_digits COMMAND test_digits)
+
 # Oracle cross-validation tests (only if MPFR available)
 if(OPINE_HAS_ORACLE)
     add_executable(test_oracle oracle/test_oracle.cpp)
