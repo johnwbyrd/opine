@@ -69,6 +69,18 @@ struct DigitVector {
 };
 
 // -----------------------------------------------------------------
+// Limb selection
+// -----------------------------------------------------------------
+// The compute digit for a machine word width. This is where
+// Platform::machine_word_bits becomes load-bearing: a 32-bit target
+// computes in 32-bit limbs, an 8-bit target in bytes.
+template <int Bits> struct LimbFor;
+template <> struct LimbFor<8> { using type = std::uint8_t; };
+template <> struct LimbFor<16> { using type = std::uint16_t; };
+template <> struct LimbFor<32> { using type = std::uint32_t; };
+template <> struct LimbFor<64> { using type = std::uint64_t; };
+
+// -----------------------------------------------------------------
 // Construction / conversion
 // -----------------------------------------------------------------
 
@@ -104,6 +116,41 @@ resizeDigits(const DigitVector<Limb, Count> &v) {
   constexpr int N = NewCount < Count ? NewCount : Count;
   for (int i = 0; i < N; ++i)
     r.d[i] = v.d[i];
+  return r;
+}
+
+// Limb-wise OR.
+template <typename Limb, int Count>
+constexpr DigitVector<Limb, Count> orDigits(const DigitVector<Limb, Count> &a,
+                                            const DigitVector<Limb, Count> &b) {
+  DigitVector<Limb, Count> r{};
+  for (int i = 0; i < Count; ++i)
+    r.d[i] = Limb(a.d[i] | b.d[i]);
+  return r;
+}
+
+// Bridge from a scalar storage word (bits_t, up to 128 bits) into a
+// digit vector, via 64-bit halves so no shift exceeds the storage
+// type's width. Step D (multi-word storage) generalizes this.
+template <typename Limb, int Count, typename Storage>
+constexpr DigitVector<Limb, Count> digitsFromStorage(Storage s) {
+  DigitVector<Limb, Count> r =
+      digitsFrom<Limb, Count>(std::uint64_t(s));
+  if constexpr (sizeof(Storage) > 8) {
+    DigitVector<Limb, Count> hi =
+        digitsFrom<Limb, Count>(std::uint64_t(s >> 64));
+    r = orDigits(r, shiftLeftDigits(hi, 64));
+  }
+  return r;
+}
+
+// The reverse bridge. Precondition: the value fits the storage
+// word (and, until step D, in 128 bits).
+template <typename Storage, typename Limb, int Count>
+constexpr Storage storageFromDigits(const DigitVector<Limb, Count> &v) {
+  Storage r = Storage(lowUint64(v));
+  if constexpr (sizeof(Storage) > 8)
+    r = Storage(r | (Storage(lowUint64(shiftRightDigits(v, 64))) << 64));
   return r;
 }
 
