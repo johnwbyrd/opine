@@ -4,14 +4,14 @@ Compile-time configurable floating-point arithmetic for C++20.
 
 ## What
 
-OPINE is a header-only C++20 library that treats a floating-point type as
-a composition of six orthogonal axes: what one value **is** (Number), how
-it maps to bits (Layout), plus Rounding, Exceptions, Platform, and
-(deferred) Box. Every operation is a template parameterized on the
-resulting `Type`, so choosing IEEE 754 binary32, rbj's integer-ordered
-two's-complement FP8, AMD's E4M3FNUZ, or a saturating FP16 with flushed
-denormals is a compile-time decision that produces zero-overhead
-specialized code.
+OPINE (Optimized Policy-Instantiated Numeric Engine) is a header-only
+C++20 library that treats a floating-point type as a composition of six
+orthogonal axes: what one value **is** (Number), how it maps to bits
+(Layout), plus Rounding, Exceptions, Platform, and (deferred) Box.
+Every operation is a template parameterized on the resulting `Type`, so
+choosing IEEE 754 binary32, rbj's integer-ordered two's-complement FP8,
+AMD's E4M3FNUZ, or a saturating FP16 with flushed denormals is a
+compile-time decision that produces zero-overhead specialized code.
 
 The point isn't to be another arbitrary-precision or soft-float library;
 it's to make format engineering — the choices IEEE 754 makes for you —
