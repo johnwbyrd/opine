@@ -10,6 +10,7 @@
 #include "opine/core/div.hpp"
 #include "opine/core/exceptions.hpp"
 #include "opine/core/extremes.hpp"
+#include "opine/core/fma.hpp"
 #include "opine/core/layout.hpp"
 #include "opine/core/mul.hpp"
 #include "opine/core/neg_abs.hpp"

@@ -131,9 +131,13 @@ Three concepts and you've seen the whole API:
   `opine::fp8_e4m3`, `opine::RbjType<E,M>`, ...) or a hand-rolled
   `opine::Type<Number, Layout, Rounding, Exceptions, Platform>`.
 - **Operate on storage bits.** `add<T>(a, b)`, `mul<T>(a, b)`,
-  `div<T>(a, b)`, `convert<Dst, Src>(x)`, `eq<T>(a, b)`,
-  `lt<T>(a, b)`, `neg<T>(a)`, `abs<T>(a)`. Every op takes and
-  returns `T::storage_type`.
+  `div<T>(a, b)`, `sqrt<T>(a)`, `fma<T>(a, b, c)` (one rounding,
+  really), `convert<Dst, Src>(x)`, the full quiet predicate set
+  (`eq`/`ne`/`lt`/`le`/`gt`/`ge`/`unordered`), classification
+  (`isNan`, `isFinite`, `isSubnormal`, ...), `minimum`/`maximum`
+  and their `Number` variants, `nextUp`/`nextDown`, `neg<T>(a)`,
+  `abs<T>(a)`, `copySign<T>(x, y)`. Every op takes and returns
+  `T::storage_type`.
 - **Cross to and from native, and to and from text.**
   `opine::fromNative<T>(1.5f)` gets you into T's bit pattern;
   `toFloat<T>` / `toDouble<T>` bridge back to native. For real I/O:

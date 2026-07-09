@@ -110,6 +110,13 @@ if(OPINE_HAS_ORACLE)
     target_include_directories(test_opine_string PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_string COMMAND test_opine_string)
 
+    # Fused multiply-add across all Types (structural³ + random,
+    # rounding sweep, fusion + flags spot checks)
+    add_executable(test_opine_fma oracle/test_opine_fma.cpp)
+    target_link_libraries(test_opine_fma PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_fma PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_fma COMMAND test_opine_fma)
+
     # Square root across all Types (FP8 exhaustive incl. rounding
     # sweep, wider sampled, flags spot checks)
     add_executable(test_opine_sqrt oracle/test_opine_sqrt.cpp)
