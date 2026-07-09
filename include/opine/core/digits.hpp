@@ -129,28 +129,38 @@ constexpr DigitVector<Limb, Count> orDigits(const DigitVector<Limb, Count> &a,
   return r;
 }
 
-// Bridge from a scalar storage word (bits_t, up to 128 bits) into a
-// digit vector, via 64-bit halves so no shift exceeds the storage
-// type's width. Step D (multi-word storage) generalizes this.
+// Bridge from a scalar storage word (bits_t, any width) into a
+// digit vector, moved in 64-bit chunks. The shift guards assume the
+// storage type pads by fewer than 64 bits (true of every bits_t
+// width the layouts use: exact powers of two, plus 80 → 128).
 template <typename Limb, int Count, typename Storage>
 constexpr DigitVector<Limb, Count> digitsFromStorage(Storage s) {
-  DigitVector<Limb, Count> r =
-      digitsFrom<Limb, Count>(std::uint64_t(s));
-  if constexpr (sizeof(Storage) > 8) {
-    DigitVector<Limb, Count> hi =
-        digitsFrom<Limb, Count>(std::uint64_t(s >> 64));
-    r = orDigits(r, shiftLeftDigits(hi, 64));
+  constexpr int Chunks = (int(sizeof(Storage)) + 7) / 8;
+  DigitVector<Limb, Count> r{};
+  for (int c = 0; c < Chunks; ++c) {
+    r = orDigits(r, shiftLeftDigits(digitsFrom<Limb, Count>(std::uint64_t(s)),
+                                    c * 64));
+    if constexpr (Chunks > 1) { // compile the shift only when in-width
+      if (c + 1 < Chunks)
+        s >>= 64; // never shifts on the final chunk
+    }
   }
   return r;
 }
 
 // The reverse bridge. Precondition: the value fits the storage
-// word (and, until step D, in 128 bits).
+// word.
 template <typename Storage, typename Limb, int Count>
 constexpr Storage storageFromDigits(const DigitVector<Limb, Count> &v) {
+  constexpr int Chunks = (int(sizeof(Storage)) + 7) / 8;
   Storage r = Storage(lowUint64(v));
-  if constexpr (sizeof(Storage) > 8)
-    r = Storage(r | (Storage(lowUint64(shiftRightDigits(v, 64))) << 64));
+  if constexpr (Chunks > 1) { // compile the shift only when in-width
+    for (int c = 1; c < Chunks; ++c) {
+      std::uint64_t chunk = lowUint64(shiftRightDigits(v, c * 64));
+      if (chunk != 0)
+        r = Storage(r | (Storage(chunk) << (c * 64)));
+    }
+  }
   return r;
 }
 

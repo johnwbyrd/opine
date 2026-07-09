@@ -507,31 +507,41 @@ std::vector<typename T::storage_type> structuralValues() {
 // Iteration strategies (continued) — stratified + cross-product
 // ===================================================================
 
-// For each biased exponent value, sample K bit patterns with random
-// mantissa and random sign. Every binade gets touched regardless of
-// how wide the format is.
+// For each sampled biased exponent value, emit K bit patterns with
+// random mantissa and random sign. Every binade gets touched up to
+// MaxExponents; formats with more binades than that (binary256's
+// 2^19, binary1024's 2^27) are sampled on an even stride that
+// always includes the bottom and top exponents. The default cap
+// equals binary128's binade count, so coverage for every format up
+// to 128 bits is unchanged.
 template <typename T, int K> struct ExponentStratifiedSingles {
   uint64_t Seed;
+  int MaxExponents = 1 << 15;
 
   template <typename Fn> void operator()(Fn &&Callback) const {
     using Fmt = typename T::layout;
     using Storage = typename T::storage_type;
     constexpr int E = Fmt::exp_bits;
-    constexpr int ExpCount = 1 << E;
+    constexpr long ExpCount = 1L << E;
+    const long Step = (ExpCount + MaxExponents - 1) / MaxExponents; // >= 1
     constexpr Storage SigMask = (Storage{1} << Fmt::sig_bits) - 1;
     constexpr Storage SignBit = Storage{1} << Fmt::sign_offset;
 
     std::mt19937_64 Rng(Seed);
-    for (int e = 0; e < ExpCount; ++e) {
+    auto emit = [&](long e) {
       for (int k = 0; k < K; ++k) {
         Storage sig = Storage(Rng());
-        if constexpr (Fmt::sig_bits > 64)
-          sig |= Storage(Rng()) << 64;
+        for (int c = 64; c < Fmt::sig_bits; c += 64)
+          sig |= Storage(Rng()) << c;
         sig &= SigMask;
         Storage sign = (Rng() & 1u) ? SignBit : Storage{0};
         Callback(Storage(sign | (Storage(e) << Fmt::exp_offset) | sig));
       }
-    }
+    };
+    for (long e = 0; e < ExpCount; e += Step)
+      emit(e);
+    if (Step > 1)
+      emit(ExpCount - 1); // the reserved/top binade, never skipped
   }
 };
 

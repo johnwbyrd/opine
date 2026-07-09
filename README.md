@@ -27,10 +27,11 @@ extensively at FP16 through FP128.
 
 using namespace opine;
 
-// Predefined bundles cover every currently supported IEEE 754 width,
+// Predefined bundles cover IEEE 754 binary16 through binary1024,
 // plus bfloat16, FP8 (E5M2 / E4M3 / E4M3FNUZ), and x87 extended80.
 using f32 = float32;                  // IEEE 754 binary32, RNDN
 using fp8 = fp8_e4m3;                 // OCP MX FP8 E4M3
+using f1k = float1024;                // IEEE 754 binary1024: p = 997
 
 // rbj's integer-ordered two's-complement FP8: same IEEE-shaped layout,
 // different Number. Comparison degenerates to signed-integer compare.
@@ -125,10 +126,20 @@ geometry of [`digits.hpp`](include/opine/core/digits.hpp) — a
 `DigitVector` of machine-word limbs sized to the operation (float128's
 226-bit exact product is eight 32-bit limbs on the default platform),
 on both compilers, with no dependence on `__int128` or `_BitInt` in
-the arithmetic path. The same geometry is what will carry binary256+
-formats and, eventually, non-binary compute radixes; the digit
-primitives are differentially verified against `_BitInt` at 40–2048
-bits and exhaustively at small widths.
+the arithmetic path. The digit primitives are differentially verified
+against `_BitInt` at 40–2048 bits and exhaustively at small widths.
+
+**binary256 / binary512 / binary1024** (`float256`, `float512`,
+`float1024`, per the IEEE 754 binary{k} formula — binary1024 carries a
+997-bit significand) run the same pipeline and pass the same
+structural + stratified + random oracle battery for add / sub / mul /
+div / convert, with the MPFR working precision scaled per format
+(2026 bits for binary1024). `exact_conversion` holds up every rung of
+the ladder, and a 200k-value test confirms float64 embeds exactly in
+float1024 and back. One caveat: their *storage* is still the scalar
+`bits_t<k>`, which exists past 128 bits only on Clang — the
+arithmetic is width-generic, and GCC support waits on the multi-word
+Layout `storage_type`.
 
 `convert<Dst, Src>` works between **any** two supported Types.
 NaN converts to the destination's canonical quiet NaN (payloads are
@@ -207,7 +218,9 @@ Set `-DOPINE_REQUIRE_ORACLE=ON` to fail configuration when MPFR is
 absent; CI uses this to prevent silent oracle skips.
 
 **Requirements:** C++20. Clang 18+ (uses `_BitInt(N)` for exact-width
-storage) or GCC 13+ (falls back to `__int128`, capped at 128 bits).
+storage, any width) or GCC 13+ (storage falls back to `__int128`,
+capping *formats* at 128 stored bits — arithmetic itself is
+width-generic via the digit geometry).
 MSVC is not supported. MPFR + GMP are needed for the oracle tests
 (`apt install libmpfr-dev libgmp-dev` on Debian/Ubuntu, `brew install
 mpfr gmp` on macOS). SoftFloat and TestFloat are fetched from source

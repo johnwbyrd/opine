@@ -32,6 +32,18 @@ namespace opine::testing {
 // enough for any format up to binary128.
 inline constexpr mpfr_prec_t ExactPrecision = 256;
 
+// Per-format working precision. Decoding must hold the full
+// significand exactly, and the compute-then-round-to-format chain
+// is double-rounding-safe when the intermediate carries at least
+// 2p + 2 bits; the margin on top is free. binary1024 (p = 997)
+// works at 2026 bits while FP8 stays at 256.
+template <typename FloatType>
+inline constexpr mpfr_prec_t oraclePrecision =
+    (2 * FloatType::number::significand::digit_count + 32 >
+     int(ExactPrecision))
+        ? mpfr_prec_t(2 * FloatType::number::significand::digit_count + 32)
+        : ExactPrecision;
+
 // ===================================================================
 // MpfrFloat — RAII wrapper around mpfr_t
 // ===================================================================
@@ -127,7 +139,7 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
   constexpr int TotalBits = Fmt::total_bits;
   Bits &= opine::maskLow<BitsType>(TotalBits);
 
-  MpfrFloat Result;
+  MpfrFloat Result{oraclePrecision<FloatType>};
 
   // Phase 1: Check for special values identified by complete bit pattern
 
@@ -334,9 +346,9 @@ template <typename Rnd> constexpr mpfr_rnd_t mpfrExactOpMode() {
 }
 
 inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
-                             const MpfrFloat &B,
-                             mpfr_rnd_t Mode = MPFR_RNDN) {
-  MpfrFloat Result;
+                             const MpfrFloat &B, mpfr_rnd_t Mode = MPFR_RNDN,
+                             mpfr_prec_t Prec = ExactPrecision) {
+  MpfrFloat Result{Prec};
   switch (Operation) {
   case Op::Add: mpfr_add(Result, A, B, Mode); break;
   case Op::Sub: mpfr_sub(Result, A, B, Mode); break;
@@ -352,8 +364,9 @@ inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
 // Exact unary operations at 256-bit precision
 // ===================================================================
 
-inline MpfrFloat mpfrExactUnaryOp(Op Operation, const MpfrFloat &A) {
-  MpfrFloat Result;
+inline MpfrFloat mpfrExactUnaryOp(Op Operation, const MpfrFloat &A,
+                                  mpfr_prec_t Prec = ExactPrecision) {
+  MpfrFloat Result{Prec};
   switch (Operation) {
   case Op::Sqrt: mpfr_sqrt(Result, A, MPFR_RNDN); break;
   case Op::Neg: mpfr_neg(Result, A, MPFR_RNDN); break;
@@ -368,8 +381,9 @@ inline MpfrFloat mpfrExactUnaryOp(Op Operation, const MpfrFloat &A) {
 // ===================================================================
 
 inline MpfrFloat mpfrExactTernaryOp(Op Operation, const MpfrFloat &A,
-                                    const MpfrFloat &B, const MpfrFloat &C) {
-  MpfrFloat Result;
+                                    const MpfrFloat &B, const MpfrFloat &C,
+                                    mpfr_prec_t Prec = ExactPrecision) {
+  MpfrFloat Result{Prec};
   switch (Operation) {
   case Op::MulAdd: mpfr_fma(Result, A, B, C, MPFR_RNDN); break;
   default: break;
@@ -585,7 +599,7 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
   // to place the rounded integer at the desired precision, and
   // mode via AbsRoundingMode(sign_of_Val).
   auto RoundToInteger = [&](int shift, mpfr_rnd_t mode) -> BitsType {
-    MpfrFloat Scaled;
+    MpfrFloat Scaled{oraclePrecision<FloatType>};
     mpfr_abs(Scaled, Val, MPFR_RNDN);
     mpfr_mul_2si(Scaled, Scaled, shift, MPFR_RNDN);
     mpfr_rint(Scaled, Scaled, mode);
@@ -718,8 +732,9 @@ template <typename FloatType> struct MpfrAdapter {
     }
 
     // Arithmetic ops: compute exact, round to format
-    MpfrFloat Exact = mpfrExactOp(
-        O, Ma, Mb, mpfrExactOpMode<typename FloatType::rounding>());
+    MpfrFloat Exact =
+        mpfrExactOp(O, Ma, Mb, mpfrExactOpMode<typename FloatType::rounding>(),
+                    oraclePrecision<FloatType>);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 
@@ -785,7 +800,7 @@ template <typename FloatType> struct MpfrAdapter {
       return {A, 0};
     }
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
-    MpfrFloat Exact = mpfrExactUnaryOp(O, Ma);
+    MpfrFloat Exact = mpfrExactUnaryOp(O, Ma, oraclePrecision<FloatType>);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 
@@ -794,7 +809,8 @@ template <typename FloatType> struct MpfrAdapter {
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Mb = decodeToMpfr<FloatType>(B);
     MpfrFloat Mc = decodeToMpfr<FloatType>(C);
-    MpfrFloat Exact = mpfrExactTernaryOp(O, Ma, Mb, Mc);
+    MpfrFloat Exact =
+        mpfrExactTernaryOp(O, Ma, Mb, Mc, oraclePrecision<FloatType>);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 };

@@ -83,6 +83,15 @@ using float32 = IEEE754Type<8, 23>;
 using float64 = IEEE754Type<11, 52>;
 using float128 = IEEE754Type<15, 112>;
 
+// IEEE 754 binary{k} for k ≥ 128: p = k − round(4·log2 k) + 13,
+// exponent width w = k − p. Arithmetic runs in the multi-limb digit
+// geometry at any width; storage is currently the scalar bits_t<k>,
+// which exists on Clang (_BitInt) at these widths — GCC storage
+// waits on the multi-word Layout storage_type.
+using float256 = IEEE754Type<19, 236>;   // p = 237
+using float512 = IEEE754Type<23, 488>;   // p = 489
+using float1024 = IEEE754Type<27, 996>;  // p = 997
+
 using bfloat16 = IEEE754Type<8, 7>;
 using fp8_e5m2 = IEEE754Type<5, 2>;
 using fp8_e4m3 = IEEE754Type<4, 3>;

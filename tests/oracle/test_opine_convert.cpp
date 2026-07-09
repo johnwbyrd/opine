@@ -25,7 +25,10 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <random>
 #include <vector>
+
+#include "harness/wide_formats.hpp"
 
 #include "harness/impl_mpfr.hpp"
 #include "harness/test_harness.hpp"
@@ -248,6 +251,55 @@ TEST_CASE("convert: round-trip identity where exact_conversion holds") {
   verifyRoundTrip<float16, float32>("f16<->f32");
   verifyRoundTrip<bfloat16, float32>("bf16<->f32");
 }
+
+// -----------------------------------------------------------------
+// binary256/512/1024 (Clang lane: scalar wide storage)
+// -----------------------------------------------------------------
+#if OPINE_TEST_HAS_WIDE_STORAGE
+
+// The binary{k} ladder widens exactly at every rung.
+static_assert(exact_conversion<float128, float256>);
+static_assert(exact_conversion<float256, float512>);
+static_assert(exact_conversion<float512, float1024>);
+static_assert(exact_conversion<float64, float1024>);
+static_assert(exact_conversion<extFloat80, float256>);
+static_assert(!exact_conversion<float1024, float512>);
+
+TEST_CASE("convert: wide formats (sampled, binary256/1024)") {
+  verifyConvertSampled<float64, float1024>("f64->f1024");
+  verifyConvertSampled<float1024, float64>("f1024->f64");
+  verifyConvertSampled<float128, float256>("f128->f256");
+  verifyConvertSampled<float256, float128>("f256->f128");
+  verifyConvertSampled<float1024, fp8_e4m3>("f1024->e4m3");
+}
+
+// The embedding theorem, realized: exact_conversion<f64, f1024>
+// holds, so out-and-back is the identity on every non-NaN double —
+// subnormals, max finite, and signed zeros included. This is the
+// cross-width consistency check that catches limb-boundary bugs.
+TEST_CASE("convert: f64 embeds exactly in f1024 (round-trip)") {
+  std::mt19937_64 rng(0xE1BED);
+  int failed = 0;
+  auto check = [&](std::uint64_t bits) {
+    using SrcBits = float64::storage_type;
+    SrcBits x = SrcBits(bits);
+    if (unpack<float64>(x).category == ValueCategory::NaN)
+      return;
+    if (convert<float64, float1024>(convert<float1024, float64>(x)) != x)
+      ++failed;
+  };
+  for (int i = 0; i < 200000; ++i)
+    check(rng());
+  for (std::uint64_t v :
+       {std::uint64_t(0), std::uint64_t(1), std::uint64_t(0x8000000000000000),
+        std::uint64_t(0x7FEFFFFFFFFFFFFF), std::uint64_t(0x0010000000000000),
+        std::uint64_t(0x000FFFFFFFFFFFFF), std::uint64_t(0x3FF0000000000000),
+        std::uint64_t(0x7FF0000000000000)})
+    check(v);
+  CHECK(failed == 0);
+}
+
+#endif // OPINE_TEST_HAS_WIDE_STORAGE
 
 // -----------------------------------------------------------------
 // Native bridges

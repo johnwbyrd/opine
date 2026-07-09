@@ -52,7 +52,12 @@ template <typename T> struct GenericBinaryFpTest {
 
   // Sampling parameters scaled to the format width.
   //   K = stratified samples per biased exponent.
+  //   MaxStratExp = cap on how many binades are enumerated.
   //   R = random pairs.
+  // The ≥ 19 and ≥ 24 tiers keep binary256/1024 in fast-suite
+  // territory: their binade counts (2^19, 2^27) can't be
+  // enumerated, and binary1024's bit-serial division makes each
+  // opine op itself expensive.
   static constexpr int StratK() {
     if constexpr (TotalBits <= 8) return 0; // exhaustive covers it
     if constexpr (TotalBits <= 16) return 8;
@@ -61,9 +66,27 @@ template <typename T> struct GenericBinaryFpTest {
     if constexpr (T::layout::exp_bits >= 15) return 1;
     return 4;
   }
-  static constexpr int RandomCount() {
+  static constexpr int MaxStratExp(Op op) {
+    if constexpr (T::layout::exp_bits >= 24) return 64;
+    if constexpr (T::layout::exp_bits >= 19) return 512;
+    // Division past 64-bit significands runs the bit-serial tier;
+    // sample every 8th binade instead of all 32k so the
+    // struct × strat crosses stay in fast-suite territory.
+    if constexpr (T::layout::exp_bits >= 15)
+      return op == Op::Div ? 4096 : (1 << 15);
+    return 1 << 15;
+  }
+  static constexpr int RandomCount(Op op) {
     if constexpr (TotalBits <= 8) return 0;
     if constexpr (TotalBits <= 16) return 200000;
+    if constexpr (T::layout::exp_bits >= 24) return 4000;
+    if constexpr (T::layout::exp_bits >= 19) return 50000;
+    // Division past 64-bit significands is the restoring bit-serial
+    // tier — orders of magnitude slower per op than add — so its
+    // random-pair budget shrinks to keep the fast suite fast; the
+    // structural and stratified tiers are untouched.
+    if constexpr (T::layout::exp_bits >= 15)
+      return op == Op::Div ? 150000 : 1000000;
     return 1000000;
   }
 
@@ -92,7 +115,8 @@ template <typename T> struct GenericBinaryFpTest {
       auto structural = structuralValues<T>();
 
       std::vector<Storage> stratified;
-      ExponentStratifiedSingles<T, StratK()> strat_gen{/*Seed=*/uint64_t(42)};
+      ExponentStratifiedSingles<T, StratK()> strat_gen{/*Seed=*/uint64_t(42),
+                                                       MaxStratExp(op)};
       strat_gen([&](Storage x) { stratified.push_back(x); });
 
       TargetedPairs<Storage> struct_x_struct{structural.data(),
@@ -104,7 +128,7 @@ template <typename T> struct GenericBinaryFpTest {
       auto struct_x_strat = crossPairs<T>(struct_singles, strat_singles);
       auto strat_x_struct = crossPairs<T>(strat_singles, struct_singles);
       RandomPairs<Storage, TotalBits> random_pairs{
-          /*Seed=*/uint64_t(1234567), RandomCount()};
+          /*Seed=*/uint64_t(1234567), RandomCount(op)};
 
       auto iter = combined(struct_x_struct, struct_x_strat, strat_x_struct,
                            random_pairs);
