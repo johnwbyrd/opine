@@ -10,6 +10,8 @@ set(OPINE_EXAMPLES
     06_overflow
     07_custom_format
     08_introspection
+    09_rump
+    10_pi_bbp
 )
 
 foreach(ex ${OPINE_EXAMPLES})

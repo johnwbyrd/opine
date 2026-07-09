@@ -19,3 +19,11 @@ etc.).
 | 06 | `overflow` | IEEE 754 §7.4 overflow: `240 × 240` in FP8 under each rounding mode, first with `inf_encoding=ReservedExponent` (goes to ±Inf when the mode carries upward, saturates otherwise) and then with `inf_encoding=None` (always saturates). |
 | 07 | `custom_format` | Roll your own: define a 12-bit float (5 exp / 6 mant / 1 sign) in one `using` and compare its precision against fp8_e5m2 (same range, fewer bits) and float16 (same range, more bits). |
 | 08 | `introspection` | A table of compile-time axis properties across every predefined Type: total bits, exponent width, semantic significand digits, exponent bias, sign method, NaN / Inf / denormal encodings. Every column is `constexpr`. |
+| 09 | `rump` | Rump's polynomial at (77617, 33096). True value ≈ −0.827…. IEEE double confidently returns the wrong magnitude, float128 famously returns the *wrong sign* (+1.17), and float256 is the first precision that gets the right answer. On Clang, float1024 lands ~300 correct decimal digits. |
+| 10 | `pi_bbp` | Bailey-Borwein-Plouffe computation of π at every precision from float32 through float1024, using only `+ − × /`. Same code at every width; the "correct bits" column climbs 24 → 54 → 112 → 235 → 488 → 997 in lockstep with each format's precision. |
+
+Examples 09 and 10 exercise formats past 128 bits (float256, float512,
+float1024) only when built with Clang — the arithmetic pipeline is
+width-generic on both compilers, but the scalar `storage_type` past 128
+bits still needs `_BitInt`. GCC builds cap at float128 and print a
+one-line note.
