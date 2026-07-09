@@ -16,6 +16,7 @@
 #include "opine/core/platform.hpp"
 #include "opine/core/round_pack.hpp"
 #include "opine/core/rounding.hpp"
+#include "opine/core/string.hpp"
 #include "opine/core/sub.hpp"
 #include "opine/core/type.hpp"
 

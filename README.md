@@ -59,10 +59,13 @@ bool less = lt<f32>(a, b);
 auto h    = convert<f32, fp8>(a);         // FP8 → binary32, exact
 auto back = convert<fp8, f32>(sum);       // binary32 → FP8, rounds
 
-// Native bridges (bit_cast + convert) are the intended way to get
-// values in and out.
-auto third = fromNative<fp8>(1.0f / 3.0f);  // 0x2B: 0.34375
+// Native bridges (bit_cast + convert), and correctly rounded
+// strings in both directions at any width.
+auto third = fromNative<fp8>(1.0f / 3.0f);   // 0x2B: 0.34375
 float f    = toFloat<fp8>(third);
+auto s     = toString<fp8>(third);           // "0.34375"
+auto pi1k  = fromString<f1k>("3.14159265358979323846264338327950");
+// toString<f1k>(pi_computed, 300) prints binary1024's 300 digits.
 ```
 
 ## Quick start
@@ -131,11 +134,14 @@ Three concepts and you've seen the whole API:
   `div<T>(a, b)`, `convert<Dst, Src>(x)`, `eq<T>(a, b)`,
   `lt<T>(a, b)`, `neg<T>(a)`, `abs<T>(a)`. Every op takes and
   returns `T::storage_type`.
-- **Cross to and from native.** `opine::fromNative<T>(1.5f)` gets
-  you into T's bit pattern; `opine::toFloat<T>(bits)` or
-  `toDouble<T>(bits)` gets you back to a native `float`/`double`
-  for display. These are your I/O until proper string conversion
-  lands.
+- **Cross to and from native, and to and from text.**
+  `opine::fromNative<T>(1.5f)` gets you into T's bit pattern;
+  `toFloat<T>` / `toDouble<T>` bridge back to native. For real I/O:
+  `toString<T>(bits, digits)` prints a correctly rounded decimal at
+  any width (binary1024's full 300 digits included),
+  `fromString<T>(text)` parses one — honoring T's Rounding axis and
+  raising IEEE flags through T's Exceptions axis — and
+  `toHexString<T>(bits)` is exact %a-style output.
 
 That's the surface. Everything else is design detail.
 
@@ -188,6 +194,7 @@ the identification decision tree is in
 | div           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | convert       | ✓ exhaustive (all 49 encoding pairs) | ✓ | ✓ sampled | ✓ sampled |
 | exception flags | ✓ exhaustive (10 encoding × rounding variants) | — | — | — |
+| toString / fromString | ✓ exhaustive round-trip | ✓ digit-exact vs MPFR | ✓ | ✓ (+ binary1024) |
 
 "Exhaustive" at FP8 means all 65,536 input pairs cross-checked against
 the MPFR oracle for every encoding. Wider formats run structural +
@@ -225,8 +232,8 @@ identity on every non-NaN bit pattern — verified exhaustively.
 Chained conversions may double-round versus a direct one; convert
 directly.
 
-**Not implemented:** exception flags (step 12), float↔integer and
-string conversion, elementary functions, and the Box axis.
+**Not implemented:** float↔integer conversion, elementary functions,
+and the Box axis.
 `DiminishedRadixComplement` value_sign (CDC 6600) parses but has no
 arithmetic pipeline yet.
 

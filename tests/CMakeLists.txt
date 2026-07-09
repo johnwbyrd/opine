@@ -102,6 +102,13 @@ if(OPINE_HAS_ORACLE)
     target_link_libraries(test_opine_flags PRIVATE opine MPFR::MPFR doctest_with_main)
     target_include_directories(test_opine_flags PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_flags COMMAND test_opine_flags)
+
+    # String conversion vs MPFR (digit-exact toString, bit-exact
+    # fromString, round-trip theorems incl. binary1024, hex floats)
+    add_executable(test_opine_string oracle/test_opine_string.cpp)
+    target_link_libraries(test_opine_string PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_string PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_string COMMAND test_opine_string)
 endif()
 
 # TestFloat conformance shim (TDD step 5): OPINE vs SoftFloat over

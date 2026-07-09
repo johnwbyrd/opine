@@ -109,10 +109,12 @@ int main() {
   row<float512>("float512", 125, reference);
   row<float1024>("float1024", 255, reference);
 
-  std::printf("\nThe printed digits show only what fits in a double; the\n");
-  std::printf("computed value carries the reported number of bits internally.\n");
-  std::printf("float1024 matches the reference exactly — computed with\n");
-  std::printf("itself.\n");
+  std::printf("\nfloat1024 matches the reference exactly — computed with\n");
+  std::printf("itself. And now the full payload, via opine::toString —\n");
+  std::printf("binary1024's π to 300 correctly rounded decimal digits:\n\n");
+  const std::string pi = toString<float1024>(reference, 300);
+  for (size_t i = 0; i < pi.size(); i += 64)
+    std::printf("  %s\n", pi.substr(i, 64).c_str());
 #else
   std::printf("  %-11s %-6s %-24s\n", "Format", "Terms",
               "π (first ~16 digits)");
@@ -121,8 +123,6 @@ int main() {
   row<float32>("float32", 12);
   row<float64>("float64", 18);
   row<float128>("float128", 32);
-  std::printf("\nWider precisions (binary256/512/1024) drop in on Clang;\n");
-  std::printf("this GCC build stops at binary128.\n");
 #endif
   return 0;
 }
