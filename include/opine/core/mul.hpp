@@ -37,8 +37,7 @@ namespace opine {
 // mul
 // -----------------------------------------------------------------
 template <typename T>
-constexpr typename T::storage_type
-mul(typename T::storage_type a, typename T::storage_type b) {
+constexpr auto mul(typename T::storage_type a, typename T::storage_type b) {
   using Num = typename T::number;
   using Storage = typename T::storage_type;
 
@@ -65,18 +64,23 @@ mul(typename T::storage_type a, typename T::storage_type b) {
   // ---------- Special value dispatch ----------
 
   if (ua.category == ValueCategory::NaN || ub.category == ValueCategory::NaN)
-    return detail::packSpecial<T>(ValueCategory::NaN, false);
+    return detail::deliver<T>(detail::packSpecial<T>(ValueCategory::NaN, false),
+                              FlagNone);
 
   if (ua.category == ValueCategory::Infinity ||
       ub.category == ValueCategory::Infinity) {
     if (ua.category == ValueCategory::Zero ||
         ub.category == ValueCategory::Zero)
-      return detail::packSpecial<T>(ValueCategory::NaN, false); // Inf × 0
-    return detail::packSpecial<T>(ValueCategory::Infinity, result_sign);
+      // Inf × 0 = NaN: invalid operation (§7.2).
+      return detail::deliver<T>(
+          detail::packSpecial<T>(ValueCategory::NaN, false), FlagInvalid);
+    return detail::deliver<T>(
+        detail::packSpecial<T>(ValueCategory::Infinity, result_sign), FlagNone);
   }
 
   if (ua.category == ValueCategory::Zero || ub.category == ValueCategory::Zero)
-    return detail::packSpecial<T>(ValueCategory::Zero, result_sign);
+    return detail::deliver<T>(
+        detail::packSpecial<T>(ValueCategory::Zero, result_sign), FlagNone);
 
   // ---------- Finite × Finite ----------
 
@@ -108,7 +112,9 @@ mul(typename T::storage_type a, typename T::storage_type b) {
     magnitude = detail::shiftLeftDigits(magnitude, target_msb - cur_msb);
   }
 
-  return detail::roundAndPack<T>(result_sign, result_exp, magnitude);
+  flags_t flags = FlagNone;
+  auto bits = detail::roundAndPack<T>(result_sign, result_exp, magnitude, flags);
+  return detail::deliver<T>(bits, flags);
 }
 
 } // namespace opine

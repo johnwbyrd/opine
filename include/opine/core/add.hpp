@@ -37,9 +37,8 @@ namespace detail {
 // in fnuz formats (the sign-set zero pattern is their NaN), while
 // the unpacked form carries the sign out-of-band.
 template <typename T>
-constexpr typename T::storage_type
-addWithSign(typename T::storage_type a, typename T::storage_type b,
-            bool negate_b) {
+constexpr auto addWithSign(typename T::storage_type a,
+                           typename T::storage_type b, bool negate_b) {
   using Num = typename T::number;
   using Rnd = typename T::rounding;
   using Storage = typename T::storage_type;
@@ -63,33 +62,37 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
   // ---------- Special value dispatch ----------
 
   if (ua.category == ValueCategory::NaN || ub.category == ValueCategory::NaN)
-    return packSpecial<T>(ValueCategory::NaN, false);
+    return deliver<T>(packSpecial<T>(ValueCategory::NaN, false), FlagNone);
 
   if (ua.category == ValueCategory::Infinity &&
       ub.category == ValueCategory::Infinity) {
     if (ua.sign == ub.sign)
-      return packSpecial<T>(ValueCategory::Infinity, ua.sign);
-    return packSpecial<T>(ValueCategory::NaN, false); // Inf − Inf = NaN
+      return deliver<T>(packSpecial<T>(ValueCategory::Infinity, ua.sign),
+                        FlagNone);
+    // Inf − Inf = NaN: invalid operation (§7.2).
+    return deliver<T>(packSpecial<T>(ValueCategory::NaN, false), FlagInvalid);
   }
   if (ua.category == ValueCategory::Infinity)
-    return packSpecial<T>(ValueCategory::Infinity, ua.sign);
+    return deliver<T>(packSpecial<T>(ValueCategory::Infinity, ua.sign),
+                      FlagNone);
   if (ub.category == ValueCategory::Infinity)
-    return packSpecial<T>(ValueCategory::Infinity, ub.sign);
+    return deliver<T>(packSpecial<T>(ValueCategory::Infinity, ub.sign),
+                      FlagNone);
 
   if (ua.category == ValueCategory::Zero &&
       ub.category == ValueCategory::Zero) {
     bool sum_sign =
         (ua.sign == ub.sign) ? ua.sign : detail::exactZeroSumSign<Rnd>();
-    return packSpecial<T>(ValueCategory::Zero, sum_sign);
+    return deliver<T>(packSpecial<T>(ValueCategory::Zero, sum_sign), FlagNone);
   }
   // Repack rather than return the raw input: unpack canonicalizes
   // non-canonical explicit-J encodings (x87 unnormals and
   // pseudo-denormals), and zero + x must return x's canonical form.
   // For implicit-digit formats pack∘unpack is the identity.
   if (ua.category == ValueCategory::Zero)
-    return pack<T>(ub);
+    return deliver<T>(pack<T>(ub), FlagNone);
   if (ub.category == ValueCategory::Zero)
-    return pack<T>(ua);
+    return deliver<T>(pack<T>(ua), FlagNone);
 
   // ---------- Finite + Finite ----------
 
@@ -121,8 +124,9 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
   } else {
     magnitude = subDigits(sa, sb);
     if (isZero(magnitude))
-      return packSpecial<T>(ValueCategory::Zero,
-                            detail::exactZeroSumSign<Rnd>());
+      return deliver<T>(packSpecial<T>(ValueCategory::Zero,
+                                       detail::exactZeroSumSign<Rnd>()),
+                        FlagNone);
   }
 
   int result_exp = ea;
@@ -141,7 +145,9 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
     result_exp -= ls;
   }
 
-  return roundAndPack<T>(result_sign, result_exp, magnitude);
+  flags_t flags = FlagNone;
+  auto bits = roundAndPack<T>(result_sign, result_exp, magnitude, flags);
+  return deliver<T>(bits, flags);
 }
 
 } // namespace detail
@@ -150,8 +156,7 @@ addWithSign(typename T::storage_type a, typename T::storage_type b,
 // add
 // -----------------------------------------------------------------
 template <typename T>
-constexpr typename T::storage_type
-add(typename T::storage_type a, typename T::storage_type b) {
+constexpr auto add(typename T::storage_type a, typename T::storage_type b) {
   return detail::addWithSign<T>(a, b, false);
 }
 

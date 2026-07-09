@@ -111,8 +111,10 @@ TestResult testAgainst(const char *Name, int HexWidth, IterFn Iter, ImplA A,
     printHex(stderr, F.InputB, HexWidth);
     std::fprintf(stderr, "  implA=0x");
     printHex(stderr, F.OutputA.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputA.Flags);
     std::fprintf(stderr, " implB=0x");
     printHex(stderr, F.OutputB.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputB.Flags);
     std::fprintf(stderr, "\n");
   }
 
@@ -157,8 +159,10 @@ TestResult testAgainstUnary(const char *Name, int HexWidth, IterFn Iter,
     printHex(stderr, F.Input, HexWidth);
     std::fprintf(stderr, "  implA=0x");
     printHex(stderr, F.OutputA.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputA.Flags);
     std::fprintf(stderr, " implB=0x");
     printHex(stderr, F.OutputB.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputB.Flags);
     std::fprintf(stderr, "\n");
   }
 
@@ -207,8 +211,10 @@ TestResult testAgainstTernary(const char *Name, int HexWidth, IterFn Iter,
     printHex(stderr, F.InputC, HexWidth);
     std::fprintf(stderr, "  implA=0x");
     printHex(stderr, F.OutputA.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputA.Flags);
     std::fprintf(stderr, " implB=0x");
     printHex(stderr, F.OutputB.Bits, HexWidth);
+    std::fprintf(stderr, "/f%02X", F.OutputB.Flags);
     std::fprintf(stderr, "\n");
   }
 
@@ -580,6 +586,13 @@ template <typename BitsType> struct BitExact {
 template <typename BitsType> struct BitExactIgnoreFlags {
   bool operator()(TestOutput<BitsType> A, TestOutput<BitsType> B) const {
     return A.Bits == B.Bits;
+  }
+};
+
+// Bit-exact including exception flags (TDD step 12).
+template <typename BitsType> struct BitExactWithFlags {
+  bool operator()(TestOutput<BitsType> A, TestOutput<BitsType> B) const {
+    return A.Bits == B.Bits && A.Flags == B.Flags;
   }
 };
 

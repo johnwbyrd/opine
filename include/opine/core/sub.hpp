@@ -16,8 +16,7 @@
 namespace opine {
 
 template <typename T>
-constexpr typename T::storage_type
-sub(typename T::storage_type a, typename T::storage_type b) {
+constexpr auto sub(typename T::storage_type a, typename T::storage_type b) {
   return detail::addWithSign<T>(a, b, true);
 }
 

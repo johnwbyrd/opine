@@ -44,8 +44,7 @@ namespace opine {
 // div
 // -----------------------------------------------------------------
 template <typename T>
-constexpr typename T::storage_type
-div(typename T::storage_type a, typename T::storage_type b) {
+constexpr auto div(typename T::storage_type a, typename T::storage_type b) {
   using Num = typename T::number;
   using Storage = typename T::storage_type;
 
@@ -65,23 +64,41 @@ div(typename T::storage_type a, typename T::storage_type b) {
   // ---------- Special value dispatch ----------
 
   if (ua.category == ValueCategory::NaN || ub.category == ValueCategory::NaN)
-    return detail::packSpecial<T>(ValueCategory::NaN, false);
+    return detail::deliver<T>(detail::packSpecial<T>(ValueCategory::NaN, false),
+                              FlagNone);
 
   if (ua.category == ValueCategory::Infinity) {
     if (ub.category == ValueCategory::Infinity)
-      return detail::packSpecial<T>(ValueCategory::NaN, false); // Inf ÷ Inf
-    return detail::packSpecial<T>(ValueCategory::Infinity, result_sign);
+      // Inf ÷ Inf = NaN: invalid operation (§7.2).
+      return detail::deliver<T>(
+          detail::packSpecial<T>(ValueCategory::NaN, false), FlagInvalid);
+    return detail::deliver<T>(
+        detail::packSpecial<T>(ValueCategory::Infinity, result_sign), FlagNone);
   }
   if (ub.category == ValueCategory::Infinity)
-    return detail::packSpecial<T>(ValueCategory::Zero, result_sign);
+    return detail::deliver<T>(
+        detail::packSpecial<T>(ValueCategory::Zero, result_sign), FlagNone);
 
   if (ua.category == ValueCategory::Zero) {
     if (ub.category == ValueCategory::Zero)
-      return detail::packSpecial<T>(ValueCategory::NaN, false); // 0 ÷ 0
-    return detail::packSpecial<T>(ValueCategory::Zero, result_sign);
+      // 0 ÷ 0 = NaN: invalid operation (§7.2).
+      return detail::deliver<T>(
+          detail::packSpecial<T>(ValueCategory::NaN, false), FlagInvalid);
+    return detail::deliver<T>(
+        detail::packSpecial<T>(ValueCategory::Zero, result_sign), FlagNone);
   }
-  if (ub.category == ValueCategory::Zero)
-    return detail::packInfOrSaturate<T>(result_sign); // x ÷ 0
+  if (ub.category == ValueCategory::Zero) {
+    // x ÷ 0: division by zero (§7.3). When the format has no Inf
+    // encoding the exact infinite result saturates to max finite —
+    // a delivered value that differs from the defined result, so
+    // inexact is raised too.
+    constexpr flags_t DivZeroFlags =
+        Num::inf_encoding == InfEncoding::None
+            ? flags_t(FlagDivByZero | FlagInexact)
+            : FlagDivByZero;
+    return detail::deliver<T>(detail::packInfOrSaturate<T>(result_sign),
+                              DivZeroFlags);
+  }
 
   // ---------- Finite ÷ Finite ----------
 
@@ -126,7 +143,9 @@ div(typename T::storage_type a, typename T::storage_type b) {
   if (cur_msb > target_msb)
     magnitude = detail::shiftRightStickyDigits(magnitude, cur_msb - target_msb);
 
-  return detail::roundAndPack<T>(result_sign, result_exp, magnitude);
+  flags_t flags = FlagNone;
+  auto bits = detail::roundAndPack<T>(result_sign, result_exp, magnitude, flags);
+  return detail::deliver<T>(bits, flags);
 }
 
 } // namespace opine

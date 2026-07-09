@@ -157,9 +157,13 @@ scalar today.
 - **Rounding** — `TowardZero`, `ToNearestTiesToEven` (default),
   `TowardPositive`, `TowardNegative`. `ToNearestTiesAway` and `ToOdd` are
   declared, not yet wired through the oracle.
-- **Exceptions** — `Silent` (default), `StatusFlags`, `ReturnStatus`,
-  `Trap`. The type-system machinery exists; the runtime plumbing lands
-  in TDD step 12.
+- **Exceptions** — `Silent` (default), `StatusFlags` (sticky
+  per-thread accumulation, `statusFlags()` / `clearStatusFlags()`), and
+  `ReturnStatus` (every rounding op returns `{bits, flags}`) are live:
+  invalid / divByZero / overflow / underflow / inexact per IEEE 754 §7,
+  with after-rounding tininess. Flags are verified exhaustively at FP8
+  against the oracle, bits and flags together. `Trap` is declared, not
+  yet implemented (static_assert'd).
 - **Platform** — identity + structural parameters (`machine_word_bits`,
   `type_policy`). `machine_word_bits` selects the compute limb for the
   digit geometry (the default `Generic32` computes in 32-bit limbs).
@@ -183,6 +187,7 @@ the identification decision tree is in
 | mul           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | div           | ✓ exhaustive | ✓ | ✓ | ✓ |
 | convert       | ✓ exhaustive (all 49 encoding pairs) | ✓ | ✓ sampled | ✓ sampled |
+| exception flags | ✓ exhaustive (10 encoding × rounding variants) | — | — | — |
 
 "Exhaustive" at FP8 means all 65,536 input pairs cross-checked against
 the MPFR oracle for every encoding. Wider formats run structural +

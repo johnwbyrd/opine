@@ -110,8 +110,7 @@ inline constexpr bool exact_conversion =
 // convert
 // -----------------------------------------------------------------
 template <typename Dst, typename Src>
-constexpr typename Dst::storage_type
-convert(typename Src::storage_type bits) {
+constexpr auto convert(typename Src::storage_type bits) {
   using SrcNum = typename Src::number;
   using DstNum = typename Dst::number;
   using SrcStorage = typename Src::storage_type;
@@ -135,11 +134,21 @@ convert(typename Src::storage_type bits) {
   // ---------- Special value dispatch ----------
 
   if (u.category == ValueCategory::NaN)
-    return detail::packSpecial<Dst>(ValueCategory::NaN, false);
-  if (u.category == ValueCategory::Infinity)
-    return detail::packInfOrSaturate<Dst>(u.sign);
+    return detail::deliver<Dst>(
+        detail::packSpecial<Dst>(ValueCategory::NaN, false), FlagNone);
+  if (u.category == ValueCategory::Infinity) {
+    // Inf into a format with no Inf encoding saturates: the value
+    // exceeded every finite — overflow + inexact.
+    constexpr flags_t InfFlags =
+        DstNum::inf_encoding == InfEncoding::None
+            ? flags_t(FlagOverflow | FlagInexact)
+            : FlagNone;
+    return detail::deliver<Dst>(detail::packInfOrSaturate<Dst>(u.sign),
+                                InfFlags);
+  }
   if (u.category == ValueCategory::Zero)
-    return detail::packSpecial<Dst>(ValueCategory::Zero, u.sign);
+    return detail::deliver<Dst>(
+        detail::packSpecial<Dst>(ValueCategory::Zero, u.sign), FlagNone);
 
   // ---------- Finite ----------
 
@@ -164,7 +173,9 @@ convert(typename Src::storage_type bits) {
   else if (cur_msb < target_msb)
     magnitude = detail::shiftLeftDigits(magnitude, target_msb - cur_msb);
 
-  return detail::roundAndPack<Dst>(u.sign, result_exp, magnitude);
+  flags_t flags = FlagNone;
+  auto out = detail::roundAndPack<Dst>(u.sign, result_exp, magnitude, flags);
+  return detail::deliver<Dst>(out, flags);
 }
 
 // -----------------------------------------------------------------
@@ -176,7 +187,7 @@ convert(typename Src::storage_type bits) {
 // numeric literals.
 
 template <typename T>
-constexpr typename T::storage_type fromNative(float v) {
+constexpr auto fromNative(float v) {
   static_assert(std::numeric_limits<float>::is_iec559 &&
                     sizeof(float) == 4,
                 "fromNative(float) requires IEEE 754 binary32");
@@ -185,7 +196,7 @@ constexpr typename T::storage_type fromNative(float v) {
 }
 
 template <typename T>
-constexpr typename T::storage_type fromNative(double v) {
+constexpr auto fromNative(double v) {
   static_assert(std::numeric_limits<double>::is_iec559 &&
                     sizeof(double) == 8,
                 "fromNative(double) requires IEEE 754 binary64");

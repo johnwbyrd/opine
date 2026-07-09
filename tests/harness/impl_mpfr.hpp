@@ -711,6 +711,122 @@ typename FloatType::storage_type mpfrRoundToFormat(const MpfrFloat &Val) {
 }
 
 // ===================================================================
+// Oracle exception flags (IEEE 754 Â§7)
+// ===================================================================
+// Computed independently of the library's pipeline:
+//   invalid    — from the operand-category grid (InfâInf, 0ÃInf,
+//                0/0, Inf/Inf).
+//   divByZero  — finite nonzero Ã· Â±0 (flagged whether the format
+//                emits Inf or saturates).
+//   inexact    — decode(result bits) â  exact value.
+//   overflow   — |round_p(exact)| exceeds the format's largest
+//                finite value, where round_p rounds to the format's
+//                precision at unbounded exponent range (Â§7.4).
+//   underflow  — tiny AND inexact, tininess after rounding:
+//                0 < |round_p(exact)| < smallest normal (Â§7.5).
+
+// The Rounding policy as a signed MPFR mode (directed modes keep
+// their sign semantics; contrast AbsRoundingMode inside
+// mpfrRoundToFormat, which works on |value|).
+template <typename Rnd> constexpr mpfr_rnd_t mpfrSignedMode() {
+  if constexpr (std::is_same_v<Rnd, rounding::TowardZero>)
+    return MPFR_RNDZ;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>)
+    return MPFR_RNDU;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>)
+    return MPFR_RNDD;
+  return MPFR_RNDN;
+}
+
+template <typename FloatType>
+uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
+                  const MpfrFloat &Exact,
+                  typename FloatType::storage_type ResultBits) {
+  using Num = typename FloatType::number;
+  using Fmt = typename FloatType::layout;
+  using BitsType = typename FloatType::storage_type;
+  uint8_t Flags = 0;
+
+  const bool ANan = Ma.isNan(), BNan = Mb.isNan();
+  const bool AInf = Ma.isInf(), BInf = Mb.isInf();
+  const bool AZero = Ma.isZero(), BZero = Mb.isZero();
+
+  if (!ANan && !BNan) {
+    switch (O) {
+    case Op::Add:
+      if (AInf && BInf && Ma.isNegative() != Mb.isNegative())
+        Flags |= opine::FlagInvalid;
+      break;
+    case Op::Sub:
+      if (AInf && BInf && Ma.isNegative() == Mb.isNegative())
+        Flags |= opine::FlagInvalid;
+      break;
+    case Op::Mul:
+      if ((AInf && BZero) || (AZero && BInf))
+        Flags |= opine::FlagInvalid;
+      break;
+    case Op::Div:
+      if ((AInf && BInf) || (AZero && BZero))
+        Flags |= opine::FlagInvalid;
+      else if (BZero && !AInf)
+        // §7.3: divideByZero needs a FINITE dividend — Inf ÷ 0 is
+        // an exact infinity, no exception.
+        Flags |= opine::FlagDivByZero;
+      break;
+    default:
+      break;
+    }
+  }
+
+  if (Exact.isNan())
+    return Flags;
+
+  // inexact: decode the delivered bits back and compare values.
+  // Same-sign infinities compare equal; Â±0 compare equal (the sign
+  // of an exact zero is a Â§6.3 rule, not an inexactness).
+  MpfrFloat Back = decodeToMpfr<FloatType>(ResultBits);
+  if (!mpfr_equal_p(Back, Exact))
+    Flags |= opine::FlagInexact;
+
+  if (!Exact.isInf() && !Exact.isZero()) {
+    // round_p(exact): the format's precision, unbounded exponent
+    // range, the Type's signed rounding mode.
+    constexpr int P = Num::significand::digit_count;
+    MpfrFloat Y{oraclePrecision<FloatType>};
+    mpfr_set(Y, Exact, MPFR_RNDN); // exact copy (same precision)
+    mpfr_prec_round(Y, mpfr_prec_t(P),
+                    mpfrSignedMode<typename FloatType::rounding>());
+
+    // Largest finite value, decoded from its bit pattern (for
+    // IntegerExtremes encodings the all-ones pattern is +Inf, so
+    // max finite is one below it).
+    BitsType MaxBits;
+    if constexpr (Num::inf_encoding == InfEncoding::IntegerExtremes) {
+      constexpr BitsType PosInf =
+          (BitsType{1} << (Fmt::total_bits - 1)) - 1;
+      MaxBits = BitsType(PosInf - 1);
+    } else {
+      MaxBits = opine::detail::packMaxFinite<FloatType>(false);
+    }
+    MpfrFloat MaxF = decodeToMpfr<FloatType>(MaxBits);
+
+    if (mpfr_cmpabs(Y, MaxF) > 0)
+      Flags |= opine::FlagOverflow;
+
+    // Smallest normal: 2^(1 - bias).
+    MpfrFloat MinNorm{oraclePrecision<FloatType>};
+    mpfr_set_ui_2exp(MinNorm, 1,
+                     mpfr_exp_t(1 - FloatType::number::exponent_bias),
+                     MPFR_RNDN);
+    const bool Tiny = !mpfr_zero_p(Y) && mpfr_cmpabs(Y, MinNorm) < 0;
+    if (Tiny && (Flags & opine::FlagInexact))
+      Flags |= opine::FlagUnderflow;
+  }
+
+  return Flags;
+}
+
+// ===================================================================
 // MpfrAdapter — the adapter struct
 // ===================================================================
 
@@ -731,11 +847,18 @@ template <typename FloatType> struct MpfrAdapter {
     default: break;
     }
 
-    // Arithmetic ops: compute exact, round to format
+    // Arithmetic ops: compute exact, round to format. Flags are
+    // computed only for ReturnStatus Types — mirroring the library,
+    // whose flag output is observable through that policy.
     MpfrFloat Exact =
         mpfrExactOp(O, Ma, Mb, mpfrExactOpMode<typename FloatType::rounding>(),
                     oraclePrecision<FloatType>);
-    return {mpfrRoundToFormat<FloatType>(Exact), 0};
+    BitsType R = mpfrRoundToFormat<FloatType>(Exact);
+    uint8_t Flags = 0;
+    if constexpr (std::is_same_v<typename FloatType::exceptions,
+                                 opine::exceptions::ReturnStatus>)
+      Flags = mpfrFlags<FloatType>(O, Ma, Mb, Exact, R);
+    return {R, Flags};
   }
 
   TestOutput<BitsType> dispatchUnary(Op O, BitsType A) const {

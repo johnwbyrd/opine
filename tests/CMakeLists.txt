@@ -95,6 +95,13 @@ if(OPINE_HAS_ORACLE)
     target_link_libraries(test_opine_convert PRIVATE opine MPFR::MPFR doctest_with_main)
     target_include_directories(test_opine_convert PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_convert COMMAND test_opine_convert)
+
+    # OPINE exception flags vs MPFR oracle (TDD step 12): exhaustive
+    # FP8 pairs comparing result bits AND IEEE 754 flags
+    add_executable(test_opine_flags oracle/test_opine_flags.cpp)
+    target_link_libraries(test_opine_flags PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_flags PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_flags COMMAND test_opine_flags)
 endif()
 
 # TestFloat conformance shim (TDD step 5): OPINE vs SoftFloat over

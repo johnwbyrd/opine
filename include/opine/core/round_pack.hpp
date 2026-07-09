@@ -27,9 +27,12 @@
 // supported Rounding policy needs, and using a wider working
 // significand than Rounding::guard_bits does not change the result.
 
+#include <type_traits>
+
 #include "opine/core/arith_detail.hpp"
 #include "opine/core/bits.hpp"
 #include "opine/core/digits.hpp"
+#include "opine/core/exceptions.hpp"
 #include "opine/core/pack_unpack.hpp"
 
 namespace opine {
@@ -58,6 +61,32 @@ using WorkingDigits = DigitVector<
     typename LimbFor<T::platform::machine_word_bits>::type,
     (NeedBits + T::platform::machine_word_bits - 1) /
         T::platform::machine_word_bits>;
+
+// -----------------------------------------------------------------
+// Flag delivery
+// -----------------------------------------------------------------
+// Every kernel computes its IEEE 754 §7 flags as a pure value and
+// hands the packed result through here; the Type's Exceptions axis
+// decides the disposition. Silent discards them (the computation is
+// dead code the optimizer removes), StatusFlags accumulates into
+// the per-thread sticky set (runtime only — constant evaluation
+// cannot touch thread_local state), and ReturnStatus changes the
+// operation's return type to WithStatus<T>.
+template <typename T>
+constexpr auto deliver(typename T::storage_type bits, flags_t flags) {
+  using E = typename T::exceptions;
+  static_assert(!E::has_traps,
+                "exceptions::Trap is declared but not yet implemented");
+  if constexpr (std::is_same_v<E, exceptions::ReturnStatus>) {
+    return WithStatus<T>{bits, flags};
+  } else {
+    if constexpr (E::has_status_flags) {
+      if (!std::is_constant_evaluated())
+        statusFlags() |= flags;
+    }
+    return bits;
+  }
+}
 
 // -----------------------------------------------------------------
 // Prologue
@@ -152,10 +181,23 @@ constexpr typename T::storage_type packInfOrSaturate(bool sign) {
 // radix terms, every test below is a digit-boundary statement
 // (guard digit, any-digit-below sticky, top-digit position), which
 // is what lets a future decimal instantiation reuse the shape.
+//
+// Flags (IEEE 754 §7, ORed into `flags`):
+//   inexact   — any G/R/S bit set (the kernels fold every discarded
+//               bit into sticky, so this is exact-vs-rounded).
+//   overflow  — the biased exponent exceeds the format's max, or
+//               the assembled pattern collides with an
+//               IntegerExtremes Inf. Implies inexact (§7.4).
+//   underflow — tiny AND inexact (§7.5), with tininess detected
+//               AFTER rounding as though the exponent range were
+//               unbounded. Note this is not the same as testing the
+//               final exponent: a subnormal-range value that the
+//               format grid rounds up to the smallest normal is
+//               still tiny.
 template <typename T, typename Limb, int Count>
 constexpr typename T::storage_type
 roundAndPack(bool result_sign, int result_exp,
-             DigitVector<Limb, Count> magnitude) {
+             DigitVector<Limb, Count> magnitude, flags_t &flags) {
   using Fmt = typename T::layout;
   using Num = typename T::number;
   using Rnd = typename T::rounding;
@@ -173,6 +215,30 @@ roundAndPack(bool result_sign, int result_exp,
 
   const DV One = digitsFrom<Limb, Count>(1);
 
+  // After-rounding tininess (§7.5), judged BEFORE the value is
+  // coarsened into the subnormal grid: round the incoming magnitude
+  // at full precision as though the exponent range were unbounded,
+  // and ask whether it still lies below the smallest normal. This
+  // differs from testing the final exponent exactly when rounding
+  // promotes a subnormal-range value up to the smallest normal —
+  // the delivered result is normal, but IEEE (and x86) still call
+  // it tiny, because the unbounded-range rounding kept p significant
+  // bits and stayed below 2^emin.
+  bool tiny = false;
+  if (result_exp < 1) {
+    const bool ug = bitAt(magnitude, GBits - 1);
+    const bool ur = (GBits >= 2) ? bitAt(magnitude, GBits - 2) : false;
+    const bool us = (GBits >= 2) ? anyBitsBelow(magnitude, GBits - 2) : false;
+    const bool ul = bitAt(magnitude, GBits);
+    int e_unbounded = result_exp;
+    if (detail::shouldRoundUp<Rnd>(ul, ug, ur, us, result_sign)) {
+      DV t = addDigits(shiftRightDigits(magnitude, GBits), One);
+      if (topBitPos(t) >= SigBits)
+        e_unbounded += 1; // carried into the next binade
+    }
+    tiny = e_unbounded < 1;
+  }
+
   // Subnormal range: shift the significand right to align with
   // biased_exp = 0.
   if (result_exp < 1) {
@@ -186,6 +252,9 @@ roundAndPack(bool result_sign, int result_exp,
   bool guard_bit = bitAt(magnitude, GBits - 1);
   bool round_bit = (GBits >= 2) ? bitAt(magnitude, GBits - 2) : false;
   bool sticky = (GBits >= 2) ? anyBitsBelow(magnitude, GBits - 2) : false;
+
+  if (guard_bit || round_bit || sticky)
+    flags |= FlagInexact;
 
   bool round_up = detail::shouldRoundUp<Rnd>(lsb, guard_bit, round_bit, sticky,
                                              result_sign);
@@ -215,6 +284,7 @@ roundAndPack(bool result_sign, int result_exp,
   // IEEE 754 §7.4: overflow becomes Inf only when the rounding mode
   // carries the magnitude upward; otherwise saturate to max finite.
   if (result_exp > MaxBiasedExp) {
+    flags |= FlagOverflow | FlagInexact;
     if constexpr (Num::inf_encoding != InfEncoding::None) {
       if (detail::overflowRoundsToInf<Rnd>(result_sign))
         return packSpecial<T>(ValueCategory::Infinity, result_sign);
@@ -227,6 +297,7 @@ roundAndPack(bool result_sign, int result_exp,
   if constexpr (Num::denormal_mode == DenormalMode::FlushToZero ||
                 Num::denormal_mode == DenormalMode::FlushBoth) {
     if (result_exp == 0 && !isZero(stored_sig)) {
+      flags |= FlagUnderflow | FlagInexact;
       bool zero_sign =
           (Num::negative_zero == NegativeZero::Exists) ? result_sign : false;
       return packSpecial<T>(ValueCategory::Zero, zero_sign);
@@ -245,12 +316,19 @@ roundAndPack(bool result_sign, int result_exp,
         ((sig_word & SigStoredMask) << Fmt::sig_offset);
     constexpr Storage PosInf = (Storage{1} << (TotalBits - 1)) - 1;
     if (tentative >= PosInf) {
+      flags |= FlagOverflow | FlagInexact;
       if (detail::overflowRoundsToInf<Rnd>(result_sign))
         return packSpecial<T>(ValueCategory::Infinity, result_sign);
       result_exp = ExpMax;
       stored_sig = subDigits(maskLowDigits<Limb, Count>(SigBits), One);
     }
   }
+
+  // ---------- Underflow ----------
+  // §7.5: tininess (after rounding, computed above) AND loss of
+  // accuracy (the format-grid rounding was inexact).
+  if (tiny && (flags & FlagInexact))
+    flags |= FlagUnderflow;
 
   // ---------- Assemble and pack ----------
   UnpackedFloat<Storage> result{};
