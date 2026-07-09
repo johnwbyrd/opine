@@ -65,10 +65,79 @@ auto third = fromNative<fp8>(1.0f / 3.0f);  // 0x2B: 0.34375
 float f    = toFloat<fp8>(third);
 ```
 
-For longer runnable programs — the rbj signed-integer-sort demo, a
-cross-format quantization tour, the §7.4 overflow matrix, a
-compile-time axis table across all predefined Types — see
-[`examples/`](examples/README.md).
+## Quick start
+
+Clone, configure, build. Requirements are in the [Build](#build)
+section further down; the tl;dr is Clang 18+ or GCC 13+, C++20,
+and MPFR + GMP if you want the oracle tests.
+
+```
+git clone https://github.com/jbyrd/opine.git
+cd opine
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+That produces every test binary and every showcase program. Run one:
+
+```
+./build/examples/03_rbj_sort
+```
+
+`build/examples/` has ten programs. Suggested reading order for a
+30-minute tour:
+
+- [`01_hello`](examples/01_hello.cpp) — the vocabulary. Define a
+  Type, evaluate `add`, print via the native bridge. Everything
+  else is a variation on this.
+- [`03_rbj_sort`](examples/03_rbj_sort.cpp) — the differentiator no
+  other floating-point library really lets you show: sort an array
+  of floats by `std::sort`ing the storage bytes as `int8_t`. Works
+  because rbj's two's-complement encoding makes bit-pattern order
+  equal float order.
+- [`08_introspection`](examples/08_introspection.cpp) — a
+  compile-time axis table for eleven predefined Types. Every value
+  in it is a `constexpr`.
+- [`09_rump`](examples/09_rump.cpp) — Rump's polynomial across the
+  precision ladder. Watch the answer arrive somewhere between
+  float128 (wrong sign) and float256 (correct).
+- [`10_pi_bbp`](examples/10_pi_bbp.cpp) — Bailey-Borwein-Plouffe
+  for π at every precision from float32 through float1024, same
+  code six ways.
+
+The full catalog is in [`examples/README.md`](examples/README.md).
+
+### Using it in your own project
+
+OPINE is header-only. Drop it in as a CMake subdirectory:
+
+```cmake
+add_subdirectory(opine)
+target_link_libraries(your_target PRIVATE opine)
+```
+
+Then one include gets you everything:
+
+```cpp
+#include <opine/opine.hpp>
+```
+
+Three concepts and you've seen the whole API:
+
+- **Pick a Type.** A predefined bundle (`opine::float32`,
+  `opine::fp8_e4m3`, `opine::RbjType<E,M>`, ...) or a hand-rolled
+  `opine::Type<Number, Layout, Rounding, Exceptions, Platform>`.
+- **Operate on storage bits.** `add<T>(a, b)`, `mul<T>(a, b)`,
+  `div<T>(a, b)`, `convert<Dst, Src>(x)`, `eq<T>(a, b)`,
+  `lt<T>(a, b)`, `neg<T>(a)`, `abs<T>(a)`. Every op takes and
+  returns `T::storage_type`.
+- **Cross to and from native.** `opine::fromNative<T>(1.5f)` gets
+  you into T's bit pattern; `opine::toFloat<T>(bits)` or
+  `toDouble<T>(bits)` gets you back to a native `float`/`double`
+  for display. These are your I/O until proper string conversion
+  lands.
+
+That's the surface. Everything else is design detail.
 
 ## Axes
 
