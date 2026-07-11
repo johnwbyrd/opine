@@ -1,7 +1,8 @@
 # OPINE
 
 One library that speaks every floating-point format — correctly,
-provably, and at any size from 8 bits to 1024.
+provably, and at any size from 8 bits to 1024. Floating point is a
+set of opinions; OPINE lets you hold your own.
 
 ## Why this exists
 
@@ -18,13 +19,26 @@ what happens on overflow. Converting between them is ad-hoc. Testing
 against them is worse — most software support for the newer formats
 ships with a shrug where the verification should be.
 
-OPINE is the common ground: a single, header-only C++20 library where
-**every format is the same machinery with different settings**. IEEE
-binary32 and a two's-complement FP8 and a saturating no-NaN FP16 and
-a 1024-bit float with 997 bits of precision are all just parameter
-choices, fed through one arithmetic pipeline that has been verified
-against independent references — exhaustively, for every possible
-input, wherever the format is small enough to make that possible.
+Here's the thing those formats have in common: every one of them is
+a **bundle of opinions**. How much precision is worth paying for.
+Whether NaN deserves bit patterns. What should happen when a result
+doesn't fit. Whether the tiny values near zero earn their hardware
+cost. IEEE 754 is a superb, battle-tested set of answers — but it is
+a set of answers, chosen in committee, not a law of nature. The name
+is the thesis: OPINE hands the opinions back to you.
+
+Concretely, it's a single, header-only C++20 library where **every
+format is the same machinery with different settings**. IEEE binary32
+and a two's-complement FP8 and a 1024-bit float with 997 bits of
+precision are all just parameter choices, fed through one arithmetic
+pipeline that has been verified against independent references —
+exhaustively, for every possible input, wherever the format is small
+enough to make that possible. And the choices genuinely are yours,
+including the deliberately relaxed ones: a float with no NaN, no
+infinity, truncation instead of rounding, and small values flushed
+to zero is a legitimate engineering tradeoff — OPINE will execute it
+faithfully and tell you exactly what it costs versus the careful
+answer.
 
 That combination is the point. Libraries that are *fast* for one
 format exist. Libraries that are *big* exist. What hasn't existed is
@@ -48,6 +62,12 @@ side, under a single API.
 - **Prototype hardware formats before the hardware exists.** A new
   12-bit float is one `using` declaration, and every operation,
   conversion, and test in the library immediately works on it.
+- **Pick your tradeoffs — including the "sloppy" ones.** Truncate
+  instead of rounding. Flush denormals. Drop NaN and infinity
+  entirely and saturate. If your workload never sees those cases,
+  that's not wrong, it's a decision — and because the strict and
+  relaxed formats live in one library, you can measure exactly what
+  the shortcut costs on your own data.
 - **Print and parse without losing anything.** `toString` produces
   correctly rounded decimals at any width (all 300 digits of a
   binary1024 value, if you ask); `fromString` parses back with
@@ -103,7 +123,7 @@ cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-That builds the tests and ten small example programs. A good tour:
+That builds the tests and thirteen small example programs. A good tour:
 
 - [`01_hello`](examples/01_hello.cpp) — the basic vocabulary.
 - [`03_rbj_sort`](examples/03_rbj_sort.cpp) — a party trick with a
@@ -112,6 +132,13 @@ That builds the tests and ten small example programs. A good tour:
   `int8_t`, floating-point order comes out.
 - [`05_quantize`](examples/05_quantize.cpp) — what really happens to
   your values in FP8, format by format.
+- [`11_fma_fusion`](examples/11_fma_fusion.cpp) — why fused
+  multiply-add exists, in two acts: the answer a rounded multiply
+  erases and `fma` keeps, then the one-liner that recovers a
+  multiply's exact rounding error.
+- [`13_exact_decimal`](examples/13_exact_decimal.cpp) — what "0.1"
+  really stores at each width (every digit exact), and sqrt(2)
+  computed and printed from float32 up to binary1024.
 - [`09_rump`](examples/09_rump.cpp) — a famous polynomial that gives
   confidently wrong answers in `double`, the *wrong sign* in
   float128, and only comes right at float256. Precision matters, and
@@ -241,7 +268,7 @@ clang-18, Ubuntu gcc-13, and macOS Apple clang, on every push.
 
 - **[Tutorial](docs/design/tutorial.md)** — from zero to your own
   custom format, step by step. Start here.
-- [`examples/`](examples/README.md) — ten small, commented programs.
+- [`examples/`](examples/README.md) — thirteen small, commented programs.
 - [`docs/design/design.md`](docs/design/design.md) — the full
   architecture: the axes, the pipeline, and the reasoning.
 - [`docs/design/tdd.md`](docs/design/tdd.md) — the verification

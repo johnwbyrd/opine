@@ -299,11 +299,14 @@ compiler generates code specialized for exactly these widths; there
 is no runtime penalty for being nonstandard.
 
 The `IEEE754<E, M>` recipe covers "an IEEE-style float with E
-exponent bits and M mantissa bits." Beyond that live the more exotic
-Numbers: `numbers::GPUStyle` (IEEE specials but flushed denormals),
-`numbers::Relaxed` (no NaN, no infinity, saturating),
+exponent bits and M mantissa bits." Beyond that live the more
+opinionated Numbers: `numbers::GPUStyle` (IEEE specials but flushed
+denormals), `numbers::Relaxed` (no NaN, no infinity, saturating —
+the "my data never goes there, give me the speed" position),
 `numbers::E4M3FNUZ` (the no-negative-zero FP8), and
-`numbers::RbjTwosComplement` (the integer-sortable encoding).
+`numbers::RbjTwosComplement` (the integer-sortable encoding). Each
+is a different set of answers to the same questions — that's the
+whole design.
 [`examples/07_custom_format.cpp`](../../examples/07_custom_format.cpp)
 compares a custom format against its standard neighbors.
 
@@ -344,7 +347,7 @@ doesn't change at all.
 
 ## 13. Where to go next
 
-- The ten [example programs](../../examples/README.md) — each is a
+- The thirteen [example programs](../../examples/README.md) — each is a
   single short file demonstrating one idea, in roughly increasing
   order of sophistication.
 - [`design.md`](design.md) — the architecture: what the axes are and
