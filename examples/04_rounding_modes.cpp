@@ -36,9 +36,16 @@ int main() {
   using namespace opine;
   std::printf("FP32 halfway between 1.0 and 1.0 + ULP, under each rounding mode:\n\n");
   run<rounding::ToNearestTiesToEven>("ToNearestTiesToEven");
+  run<rounding::ToNearestTiesAway>("ToNearestTiesAway");
   run<rounding::TowardZero>("TowardZero");
   run<rounding::TowardPositive>("TowardPositive");
   run<rounding::TowardNegative>("TowardNegative");
-  std::printf("\nNote how the two directed modes swap sides between the +/- rows.\n");
+  run<rounding::ToOdd>("ToOdd");
+  std::printf(
+      "\nNotes: the directed modes swap sides between the +/- rows. The\n"
+      "tie goes DOWN under TiesToEven (1.0's last bit is even) but UP\n"
+      "under TiesAway. ToOdd jams any inexact result's last bit to 1 —\n"
+      "the mode you want for intermediates that will be rounded again,\n"
+      "because it can never bias a later tie.\n");
   return 0;
 }

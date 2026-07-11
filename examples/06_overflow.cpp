@@ -50,9 +50,11 @@ int main() {
   // both inputs are exact powers of two → mode-independent.
   std::printf("IEEE FP8 E5M2 (inf_encoding = ReservedExponent), 128 × 512:\n");
   run<IeeeRnd<rounding::ToNearestTiesToEven>>("ToNearestTiesToEven", 128.f, 512.f);
+  run<IeeeRnd<rounding::ToNearestTiesAway>>("ToNearestTiesAway", 128.f, 512.f);
   run<IeeeRnd<rounding::TowardZero>>("TowardZero", 128.f, 512.f);
   run<IeeeRnd<rounding::TowardPositive>>("TowardPositive", 128.f, 512.f);
   run<IeeeRnd<rounding::TowardNegative>>("TowardNegative", 128.f, 512.f);
+  run<IeeeRnd<rounding::ToOdd>>("ToOdd", 128.f, 512.f);
 
   // FP8 E4M3FNUZ (max finite = 240, no Inf). 16 × 32 = 512
   // overflows; the format has no Inf encoding so §7.4's "Inf"
@@ -62,5 +64,21 @@ int main() {
   run<FnuzRnd<rounding::TowardZero>>("TowardZero", 16.f, 32.f);
   run<FnuzRnd<rounding::TowardPositive>>("TowardPositive", 16.f, 32.f);
   run<FnuzRnd<rounding::TowardNegative>>("TowardNegative", 16.f, 32.f);
+
+  // Whatever the bits say, the Exceptions axis says WHY. The same
+  // overflowing multiply under the ReturnStatus policy hands back
+  // {bits, flags}; saturation without a flag would be silent data
+  // corruption, saturation WITH a flag is a diagnosable event.
+  using E5M2Status =
+      Type<numbers::IEEE754<5, 2>, layouts::IEEE<5, 2, true>,
+           rounding::TowardZero, exceptions::ReturnStatus>;
+  auto r = mul<E5M2Status>(fromNative<E5M2Status>(128.f).bits,
+                           fromNative<E5M2Status>(512.f).bits);
+  std::printf("\nSame overflow under exceptions::ReturnStatus (TowardZero):\n"
+              "  bits 0x%02llX (%g)  overflow=%d inexact=%d\n",
+              static_cast<unsigned long long>(r.bits),
+              double(toFloat<E5M2Status>(r.bits)),
+              int((r.flags & FlagOverflow) != 0),
+              int((r.flags & FlagInexact) != 0));
   return 0;
 }

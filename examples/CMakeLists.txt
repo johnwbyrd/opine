@@ -12,6 +12,9 @@ set(OPINE_EXAMPLES
     08_introspection
     09_rump
     10_pi_bbp
+    11_fma_fusion
+    12_number_line
+    13_exact_decimal
 )
 
 foreach(ex ${OPINE_EXAMPLES})
