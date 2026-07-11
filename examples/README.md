@@ -24,6 +24,7 @@ etc.).
 | 11 | `fma_fusion` | Why fused multiply-add exists: `(1+ε)² − (1+2ε)` comes out 0 unfused and exactly ε² fused, then `fma(x, y, −x·y)` recovers the exact rounding error of a multiply (−2⁻⁵⁴ for `3 × nearest(1/3)`) — the identity behind double-double arithmetic. |
 | 12 | `number_line` | Floating-point values as a walkable set of points: a `nextUp` census of every fp8_e4m3 value from −240 to +240 (239 points: 224 normal, 14 subnormal, one zero), ulp gaps at 1.0 across five formats, the NaN and signed-zero rules of `minimum`/`maximumNumber`, and `copySign`. |
 | 13 | `exact_decimal` | Correctly rounded text both ways: what "0.1" *really* stores at each width (every digit exact — 55 of them for float64), the toString→fromString round-trip guarantee, and sqrt(2) computed and printed from float32 up to binary1024, 100 correct digits at the top. |
+| 14 | `sloppy_float` | The ComputeFormat axis measured: `WithComputePrecision<float32, K>` stores binary32 bits but computes on operands truncated to K significand bits. Per-op error tables at K = 4…24 (watch the negative bias — truncation never rounds up) and a Mandelbrot trajectory-divergence study: the design-space sweep you run before committing a sloppy soft-float to silicon or assembly. |
 
 Examples 09 and 10 exercise formats past 128 bits (float256, float512,
 float1024) on every compiler: past 128 bits the `storage_type` is a

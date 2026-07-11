@@ -15,6 +15,7 @@ set(OPINE_EXAMPLES
     11_fma_fusion
     12_number_line
     13_exact_decimal
+    14_sloppy_float
 )
 
 foreach(ex ${OPINE_EXAMPLES})
