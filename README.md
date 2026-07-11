@@ -1,298 +1,232 @@
 # OPINE
 
-Compile-time configurable floating-point arithmetic for C++20.
+One library that speaks every floating-point format — correctly,
+provably, and at any size from 8 bits to 1024.
 
-## What
+## Why this exists
 
-OPINE (Optimized Policy-Instantiated Numeric Engine) is a header-only
-C++20 library that treats a floating-point type as a composition of six
-orthogonal axes: what one value **is** (Number), how it maps to bits
-(Layout), plus Rounding, Exceptions, Platform, and (deferred) Box.
-Every operation is a template parameterized on the resulting `Type`, so
-choosing IEEE 754 binary32, rbj's integer-ordered two's-complement FP8,
-AMD's E4M3FNUZ, or a saturating FP16 with flushed denormals is a
-compile-time decision that produces zero-overhead specialized code.
+For decades, "floating point" meant two types: `float` and `double`.
+That world is gone. Machine learning brought FP8 (in at least three
+incompatible flavors), bfloat16, and FP16. Old hardware left us x87's
+80-bit format and stranger things. Researchers keep proposing new
+encodings. And when you need more precision than `double`, you're
+suddenly shopping for a whole different category of library.
 
-The point isn't to be another arbitrary-precision or soft-float library;
-it's to make format engineering — the choices IEEE 754 makes for you —
-explicit, parametric, and testable. Every arithmetic operation in the
-library is cross-checked against a MPFR-based reference oracle,
-Berkeley SoftFloat, and Berkeley TestFloat, exhaustively at FP8 and
-extensively at FP16 through FP128.
+Each of these formats is its own little island. They disagree about
+where the bits go, what NaN looks like, whether negative zero exists,
+what happens on overflow. Converting between them is ad-hoc. Testing
+against them is worse — most software support for the newer formats
+ships with a shrug where the verification should be.
 
-## Look
+OPINE is the common ground: a single, header-only C++20 library where
+**every format is the same machinery with different settings**. IEEE
+binary32 and a two's-complement FP8 and a saturating no-NaN FP16 and
+a 1024-bit float with 997 bits of precision are all just parameter
+choices, fed through one arithmetic pipeline that has been verified
+against independent references — exhaustively, for every possible
+input, wherever the format is small enough to make that possible.
+
+That combination is the point. Libraries that are *fast* for one
+format exist. Libraries that are *big* exist. What hasn't existed is
+one place where all of these formats are **complete** (arithmetic,
+comparison, conversion, printing, parsing, exception flags — the
+whole IEEE 754 operation set) and **demonstrably correct**, side by
+side, under a single API.
+
+## What you can do with it
+
+- **Run the same algorithm at any precision.** Write it once, then
+  instantiate at FP8, binary32, binary64, binary256, binary1024.
+  Watch exactly where your algorithm stops working — or starts.
+- **Convert anything to anything.** `convert<Dst, Src>(x)` works
+  between any two supported formats, with correct rounding and
+  sensible handling of the awkward cases (NaN into a format with no
+  NaN, infinity into a format that saturates instead).
+- **Study quantization honestly.** Simulate FP8 or your own custom
+  format *bit-exactly* — the values your model will actually see —
+  instead of approximating with `float` and hoping.
+- **Prototype hardware formats before the hardware exists.** A new
+  12-bit float is one `using` declaration, and every operation,
+  conversion, and test in the library immediately works on it.
+- **Print and parse without losing anything.** `toString` produces
+  correctly rounded decimals at any width (all 300 digits of a
+  binary1024 value, if you ask); `fromString` parses back with
+  correct rounding in the format's own rounding mode.
+- **Catch the events IEEE 754 says you should be able to catch.**
+  Overflow, underflow, division by zero, invalid operations, and
+  inexact results are reported through a policy you pick: silently
+  discarded, accumulated in sticky flags, or returned with every
+  result.
+
+## Thirty seconds of code
 
 ```cpp
 #include <opine/opine.hpp>
-
 using namespace opine;
 
-// Predefined bundles cover IEEE 754 binary16 through binary1024,
-// plus bfloat16, FP8 (E5M2 / E4M3 / E4M3FNUZ), and x87 extended80.
-using f32 = float32;                  // IEEE 754 binary32, RNDN
-using fp8 = fp8_e4m3;                 // OCP MX FP8 E4M3
-using f1k = float1024;                // IEEE 754 binary1024: p = 997
+// Pick formats. These are all ordinary types, resolved at compile time.
+using f32 = float32;      // IEEE 754 binary32 — the familiar `float`
+using fp8 = fp8_e4m3;     // 8-bit float used in ML inference
+using f1k = float1024;    // IEEE binary1024: 997 bits of precision
 
-// rbj's integer-ordered two's-complement FP8: same IEEE-shaped layout,
-// different Number. Comparison degenerates to signed-integer compare.
-using rbj8 = RbjType<4, 3>;
+// Values live as bit patterns; fromNative gets you in from a float.
+auto a = fromNative<f32>(1.5f);
+auto b = fromNative<f32>(2.25f);
 
-// Or roll your own:
-using saturating_fp16 = Type<
-    numbers::GPUStyle<5, 10>,          // IEEE special values, no denormals
-    layouts::IEEE<5, 10, true>,
-    rounding::TowardZero
->;
-
-// Operations take and return storage bits.
-f32::storage_type a = /* ... */;
-f32::storage_type b = /* ... */;
+// The full operation set, all correctly rounded:
 auto sum  = add<f32>(a, b);
 auto prod = mul<f32>(a, b);
-auto quot = div<f32>(a, b);
-bool less = lt<f32>(a, b);
+auto root = sqrt<f32>(sum);
+auto fused = fma<f32>(a, b, sum);     // one rounding, genuinely fused
+bool less  = lt<f32>(a, b);
 
-// Conversion spells BOTH Types at the call site, destination first
-// (reads like a cast). The source can't be deduced from the argument:
-// distinct Types share a storage width — fp8_e5m2 and fp8_e4m3 are
-// both 8 bits. Rounding is the destination's Rounding axis.
-auto h    = convert<f32, fp8>(a);         // FP8 → binary32, exact
-auto back = convert<fp8, f32>(sum);       // binary32 → FP8, rounds
+// Convert between formats — destination first, like a cast:
+auto tiny = convert<fp8, f32>(sum);   // squeeze into 8 bits, rounds
+auto wide = convert<f1k, f32>(sum);   // exact: every f32 fits
 
-// Native bridges (bit_cast + convert), and correctly rounded
-// strings in both directions at any width.
-auto third = fromNative<fp8>(1.0f / 3.0f);   // 0x2B: 0.34375
-float f    = toFloat<fp8>(third);
-auto s     = toString<fp8>(third);           // "0.34375"
-auto pi1k  = fromString<f1k>("3.14159265358979323846264338327950");
-// toString<f1k>(pi_computed, 300) prints binary1024's 300 digits.
+// And back out to something you can print:
+float f = toFloat<f32>(sum);          // 3.75
+auto s  = toString<fp8>(tiny);        // "3.75" — it happens to fit!
+auto pi = fromString<f1k>("3.14159265358979323846264338327950");
 ```
 
-## Quick start
+If you want the step-by-step version of everything above — including
+how to add OPINE to your build in the first place — start with the
+**[tutorial](docs/design/tutorial.md)**.
 
-Clone, configure, build. Requirements are in the [Build](#build)
-section further down; the tl;dr is Clang 18+ or GCC 13+, C++20,
-and MPFR + GMP if you want the oracle tests.
+## Try it in two minutes
 
-```
-git clone https://github.com/jbyrd/opine.git
+```bash
+git clone https://github.com/johnwbyrd/opine.git
 cd opine
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ```
 
-That produces every test binary and every showcase program. Run one:
+That builds the tests and ten small example programs. A good tour:
+
+- [`01_hello`](examples/01_hello.cpp) — the basic vocabulary.
+- [`03_rbj_sort`](examples/03_rbj_sort.cpp) — a party trick with a
+  point: a two's-complement float format whose values sort correctly
+  when you treat the bytes as plain signed integers. `std::sort` on
+  `int8_t`, floating-point order comes out.
+- [`05_quantize`](examples/05_quantize.cpp) — what really happens to
+  your values in FP8, format by format.
+- [`09_rump`](examples/09_rump.cpp) — a famous polynomial that gives
+  confidently wrong answers in `double`, the *wrong sign* in
+  float128, and only comes right at float256. Precision matters, and
+  now you can turn the knob.
+- [`10_pi_bbp`](examples/10_pi_bbp.cpp) — π computed at every
+  precision from float32 through float1024. Same code, six widths,
+  300 correct digits at the top.
+
+The full list is in [`examples/README.md`](examples/README.md).
+
+## How it works, briefly
+
+OPINE's core idea: a floating-point type isn't one thing, it's a
+bundle of independent decisions. The library makes each decision a
+separate template parameter:
 
 ```
-./build/examples/03_rbj_sort
+Type<Number, Layout, Rounding, Exceptions, Platform>
 ```
 
-`build/examples/` has ten programs. Suggested reading order for a
-30-minute tour:
+- **Number** — what a value *means*: how many digits of precision,
+  how the sign works, whether NaN / infinity / negative zero exist
+  and how they're encoded.
+- **Layout** — where the bits physically go.
+- **Rounding** — what happens to digits that don't fit. All six
+  classic modes, including round-to-odd (the one you want for
+  intermediate results that will be rounded again).
+- **Exceptions** — how overflow, underflow, and friends are
+  reported: silently, via sticky flags, or attached to each result.
+- **Platform** — machine-specific tuning knobs.
 
-- [`01_hello`](examples/01_hello.cpp) — the vocabulary. Define a
-  Type, evaluate `add`, print via the native bridge. Everything
-  else is a variation on this.
-- [`03_rbj_sort`](examples/03_rbj_sort.cpp) — the differentiator no
-  other floating-point library really lets you show: sort an array
-  of floats by `std::sort`ing the storage bytes as `int8_t`. Works
-  because rbj's two's-complement encoding makes bit-pattern order
-  equal float order.
-- [`08_introspection`](examples/08_introspection.cpp) — a
-  compile-time axis table for eleven predefined Types. Every value
-  in it is a `constexpr`.
-- [`09_rump`](examples/09_rump.cpp) — Rump's polynomial across the
-  precision ladder. Watch the answer arrive somewhere between
-  float128 (wrong sign) and float256 (correct).
-- [`10_pi_bbp`](examples/10_pi_bbp.cpp) — Bailey-Borwein-Plouffe
-  for π at every precision from float32 through float1024, same
-  code six ways.
+Every operation is one shared pipeline — unpack the bits, compute
+exactly, round once, pack the bits — specialized at compile time for
+the exact `Type` you chose. There is no runtime dispatch, no
+allocation, and no format-specific code to get out of sync: an
+oddball format is the *same code* as binary64 with different
+parameters. That's also why there is no size ceiling — arithmetic
+runs on arrays of machine words sized to the job, so binary1024
+works on any supported compiler.
 
-The full catalog is in [`examples/README.md`](examples/README.md).
+The deeper story is in [`docs/design/design.md`](docs/design/design.md).
 
-### Using it in your own project
+## Can you trust the math?
 
-OPINE is header-only. Drop it in as a CMake subdirectory:
+This is the part of the project we're proudest of. Floating-point
+code is notoriously easy to get subtly wrong, so OPINE treats
+verification as a first-class feature:
 
-```cmake
-add_subdirectory(opine)
-target_link_libraries(your_target PRIVATE opine)
-```
+- **An independent oracle.** Every operation is cross-checked against
+  a reference built on [MPFR](https://www.mpfr.org/) (the
+  arbitrary-precision library trusted throughout the numerical
+  community). The oracle decodes bit patterns, computes the exact
+  answer at hundreds of bits, and rounds it back — through completely
+  different code than the library itself.
+- **Exhaustive where exhaustive is possible.** For 8-bit formats,
+  the tests don't sample — they check *every possible pair of
+  inputs* (all 65,536 combinations) for every operation, every
+  encoding, and every rounding mode, bit for bit, flags included.
+- **Sampled hard where it isn't.** Wider formats run structured
+  sweeps: every boundary value, every exponent range, plus large
+  random batteries — up through binary1024.
+- **Second and third opinions.** IEEE formats are additionally
+  checked against Berkeley SoftFloat, and run through Berkeley
+  TestFloat — the same conformance suite hardware FPU vendors use.
 
-Then one include gets you everything:
+The references have caught real bugs in the library during
+development, and the library has caught subtle bugs in the test
+oracle. That cross-pressure is exactly the design. The methodology is
+documented in [`docs/design/tdd.md`](docs/design/tdd.md).
 
-```cpp
-#include <opine/opine.hpp>
-```
+## Is it fast?
 
-Three concepts and you've seen the whole API:
+It's honest. The abstraction itself is free — everything is resolved
+at compile time, and a `Type` is exactly as expensive as the code it
+generates. The arithmetic kernels currently favor being *obviously
+correct* over being clever: division and square root, for example,
+use simple digit-at-a-time algorithms. The architecture reserves a
+specific place (the Platform axis) for optimized backends — with the
+hard rule that a fast path must produce bit-identical results to the
+reference path, enforced by the same test battery. Correct first,
+fast where it counts, never fast-but-different.
 
-- **Pick a Type.** A predefined bundle (`opine::float32`,
-  `opine::fp8_e4m3`, `opine::RbjType<E,M>`, ...) or a hand-rolled
-  `opine::Type<Number, Layout, Rounding, Exceptions, Platform>`.
-- **Operate on storage bits.** `add<T>(a, b)`, `mul<T>(a, b)`,
-  `div<T>(a, b)`, `sqrt<T>(a)`, `fma<T>(a, b, c)` (one rounding,
-  really), `convert<Dst, Src>(x)`, the full quiet predicate set
-  (`eq`/`ne`/`lt`/`le`/`gt`/`ge`/`unordered`), classification
-  (`isNan`, `isFinite`, `isSubnormal`, ...), `minimum`/`maximum`
-  and their `Number` variants, `nextUp`/`nextDown`, `neg<T>(a)`,
-  `abs<T>(a)`, `copySign<T>(x, y)`. Every op takes and returns
-  `T::storage_type`.
-- **Cross to and from native, and to and from text.**
-  `opine::fromNative<T>(1.5f)` gets you into T's bit pattern;
-  `toFloat<T>` / `toDouble<T>` bridge back to native. For real I/O:
-  `toString<T>(bits, digits)` prints a correctly rounded decimal at
-  any width (binary1024's full 300 digits included),
-  `fromString<T>(text)` parses one — honoring T's Rounding axis and
-  raising IEEE flags through T's Exceptions axis — and
-  `toHexString<T>(bits)` is exact %a-style output.
+## What's implemented today
 
-That's the surface. Everything else is design detail.
+| | FP8 (7 encodings) | bfloat16 / FP16 / FP32 / FP64 | x87 80-bit | float128 | float256/512/1024 |
+|---|:---:|:---:|:---:|:---:|:---:|
+| add, sub, mul, div | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
+| sqrt, fma | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
+| comparisons, classify, min/max, nextUp/nextDown | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
+| convert (any → any) | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
+| toString / fromString | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
+| exception flags | ✓ exhaustive | ✓ | ✓ | ✓ | ✓ |
 
-## Axes
+("Exhaustive" means every possible input, or input pair, verified
+against the oracle.)
 
-`Type<Number, Layout, Rounding, Exceptions, Platform>` — Box is
-defined in the design but not yet expressed in code; all values are
-scalar today.
+Supported encodings, end to end: IEEE 754 (binary16 through
+binary1024, plus bfloat16 and FP8 E5M2/E4M3), E4M3FNUZ (the
+no-negative-zero FP8 used by AMD and others), x87 extended 80-bit
+(including its non-canonical patterns), saturating no-NaN formats
+with flushed denormals (GPU-style), and rbj's integer-sortable
+two's-complement encoding. All six rounding modes. Three exception
+policies.
 
-- **Number** — what one numeric value is. A primitive (`radix`,
-  `digit_width`, `digit_count`, `sign_method`) or a composite
-  (`FloatingPoint` today; `FixedPoint`, `SharedExponent`, and `Codebook`
-  are cataloged, not implemented). This is where "IEEE has NaN at
-  reserved exponent", "rbj has NaN at the trap value", and "E4M3FNUZ has
-  no negative zero" live.
-- **Layout** — how one Number maps to bits. Fixed-width today, with
-  field offsets and `implicit_digit`. DPD / BID / posit-regime / variable
-  layouts are in the design space, not the code.
-- **Rounding** — `TowardZero`, `ToNearestTiesToEven` (default),
-  `TowardPositive`, `TowardNegative`, `ToNearestTiesAway`, and `ToOdd`
-  (von Neumann jamming — the double-rounding-safe intermediate mode),
-  all verified against the oracle.
-- **Exceptions** — `Silent` (default), `StatusFlags` (sticky
-  per-thread accumulation, `statusFlags()` / `clearStatusFlags()`), and
-  `ReturnStatus` (every rounding op returns `{bits, flags}`) are live:
-  invalid / divByZero / overflow / underflow / inexact per IEEE 754 §7,
-  with after-rounding tininess. Flags are verified exhaustively at FP8
-  against the oracle, bits and flags together. `Trap` is declared, not
-  yet implemented (static_assert'd).
-- **Platform** — identity + structural parameters (`machine_word_bits`,
-  `type_policy`). `machine_word_bits` selects the compute limb for the
-  digit geometry (the default `Generic32` computes in 32-bit limbs).
-  Hardware capabilities are declared as booleans today and will migrate
-  to template specializations when specialized backends land.
+**Not yet:** float↔integer conversion, elementary functions (sin,
+exp, log), decimal radix, posits, and vector/SIMD packaging. The
+architecture has a place for each; see the
+[design docs](docs/design/) for the roadmap thinking.
 
-Full architecture is in [`docs/design/design.md`](docs/design/design.md);
-the format catalog is in [`docs/design/catalog.md`](docs/design/catalog.md);
-the identification decision tree is in
-[`docs/design/decision-tree.md`](docs/design/decision-tree.md).
+## Requirements
 
-## What works
-
-| Operation | FP8 (7 variants) | bfloat16 / FP16 / FP32 / FP64 | extFloat80 | float128 |
-|-----------|:---:|:---:|:---:|:---:|
-| pack / unpack | ✓ exhaustive | ✓ | ✓ (canonicalizes non-canonical x87) | ✓ |
-| eq / lt / le  | ✓ exhaustive | ✓ | ✓ | ✓ |
-| neg / abs     | ✓ exhaustive | ✓ | ✓ | ✓ |
-| add           | ✓ exhaustive | ✓ | ✓ | ✓ |
-| sub           | ✓ exhaustive | ✓ | ✓ | ✓ |
-| mul           | ✓ exhaustive | ✓ | ✓ | ✓ |
-| div           | ✓ exhaustive | ✓ | ✓ | ✓ |
-| convert       | ✓ exhaustive (all 49 encoding pairs) | ✓ | ✓ sampled | ✓ sampled |
-| exception flags | ✓ exhaustive (10 encoding × rounding variants) | — | — | — |
-| toString / fromString | ✓ exhaustive round-trip | ✓ digit-exact vs MPFR | ✓ | ✓ (+ binary1024) |
-
-"Exhaustive" at FP8 means all 65,536 input pairs cross-checked against
-the MPFR oracle for every encoding. Wider formats run structural +
-per-binade stratified + random against the oracle via
-[`GenericBinaryFpTest<T>`](tests/harness/generic_binary_test.hpp);
-adding a new format or op is one line each.
-
-There is **no width ceiling**: every operation computes in the digit
-geometry of [`digits.hpp`](include/opine/core/digits.hpp) — a
-`DigitVector` of machine-word limbs sized to the operation (float128's
-226-bit exact product is eight 32-bit limbs on the default platform),
-on both compilers, with no dependence on `__int128` or `_BitInt` in
-the arithmetic path. The digit primitives are differentially verified
-against `_BitInt` at 40–2048 bits and exhaustively at small widths.
-
-**binary256 / binary512 / binary1024** (`float256`, `float512`,
-`float1024`, per the IEEE 754 binary{k} formula — binary1024 carries a
-997-bit significand) run the same pipeline and pass the same
-structural + stratified + random oracle battery for add / sub / mul /
-div / convert, with the MPFR working precision scaled per format
-(2026 bits for binary1024). `exact_conversion` holds up every rung of
-the ladder, and a 200k-value test confirms float64 embeds exactly in
-float1024 and back. Their *storage* is a `DigitVector` of 64-bit
-limbs — the same limb-array path on every compiler, so **GCC runs
-binary1024 too**; `_BitInt` appears nowhere in storage or
-arithmetic.
-
-`convert<Dst, Src>` works between **any** two supported Types.
-NaN converts to the destination's canonical quiet NaN (payloads are
-not propagated); Inf into a format with no Inf encoding saturates to
-max finite; −0 into a format without −0 is +0. Where
-`exact_conversion<Src, Dst>` holds (e.g. every FP8 → FP16, FP16 →
-FP32, bfloat16 → FP32, extFloat80 → float128), round-tripping is the
-identity on every non-NaN bit pattern — verified exhaustively.
-Chained conversions may double-round versus a direct one; convert
-directly.
-
-**Not implemented:** float↔integer conversion, elementary functions,
-and the Box axis.
-`DiminishedRadixComplement` value_sign (CDC 6600) parses but has no
-arithmetic pipeline yet.
-
-**Encodings supported end-to-end:** Explicit + ReservedExponent (IEEE
-754), Explicit + NegativeZeroBitPattern (E4M3FNUZ), Explicit + None
-(saturating), Explicit-J-bit (x87 extended80), RadixComplement +
-IntegerExtremes (rbj / PDP-10), with input- and output-denormal flushing
-via `FlushInputs` / `FlushToZero` / `FlushBoth`.
-
-## Correctness
-
-The library's testing story is what makes non-IEEE encodings tractable
-to build. Three independent references:
-
-- **MPFR oracle.** [`tests/harness/impl_mpfr.hpp`](tests/harness/impl_mpfr.hpp)
-  decodes any bit pattern under any `Number`+`Layout` to an exact
-  256-bit MPFR value, performs the exact arithmetic, and re-encodes
-  using the Type's `Rounding` policy — including the IEEE 754 §7.4
-  overflow rule (Inf only when the mode carries the magnitude upward)
-  and §6.3 signed-zero rules. The re-encode branches on every
-  `nan_encoding` / `inf_encoding` / `value_sign` / `denormal_mode`
-  combination the axes admit.
-- **Berkeley SoftFloat.** Fetched, patched, and linked into
-  [`test_oracle.cpp`](tests/oracle/test_oracle.cpp) as an independent
-  IEEE 754 reference for float16 / float32 / float64 / extFloat80 /
-  float128.
-- **Berkeley TestFloat.** The `genCases` generator drives
-  [`test_opine_testfloat.cpp`](tests/testfloat/test_opine_testfloat.cpp)
-  across FP16 and FP32 for add / sub / mul / div under all four
-  supported rounding modes, plus eq / lt / le — the same conformance
-  battery hardware FPU vendors run.
-
-Backing these up:
-
-- **Property tests** for non-IEEE encodings
-  ([`test_oracle_nonstd.cpp`](tests/oracle/test_oracle_nonstd.cpp)):
-  rbj's monotonic-ordering law (signed-int compare equals FP compare),
-  E4M3FNUZ's single-NaN invariant, Relaxed's no-NaN / no-Inf invariant,
-  and exhaustive decode → encode → decode round-trips.
-- **Rounding-mode tests** ([`test_oracle_rounding.cpp`](tests/oracle/test_oracle_rounding.cpp))
-  verify the oracle's four rounding modes on hand-worked tie and 3/4
-  values, positive and negative — the case that isolates the
-  `abs`-mode-swap for directed rounding.
-- **Generic width-scaling framework** ([`generic_binary_test.hpp`](tests/harness/generic_binary_test.hpp)):
-  every binary op runs the same
-  structural + stratified + random battery, sized to the format's
-  `total_bits`. Adding an op is one adapter case; adding a Type is
-  one line in the test's `TEST_CASE_TEMPLATE`.
-
-Test-suite methodology is documented in
-[`docs/design/tdd.md`](docs/design/tdd.md). 13 test binaries, all
-passing on Ubuntu clang-18, Ubuntu gcc-13, and macOS AppleClang.
-
-## Build
+- **C++20**, header-only. No dependencies to *use* the library.
+- **Clang 18+ or GCC 13+** (MSVC is not supported yet).
+- MPFR and GMP only if you want to run the oracle tests
+  (`apt install libmpfr-dev libgmp-dev` or `brew install mpfr gmp`).
 
 ```bash
 cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
@@ -300,67 +234,23 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-Set `-DOPINE_REQUIRE_ORACLE=ON` to fail configuration when MPFR is
-absent; CI uses this to prevent silent oracle skips.
+CI runs the full suite — twenty test binaries — on Ubuntu
+clang-18, Ubuntu gcc-13, and macOS Apple clang, on every push.
 
-**Requirements:** C++20. Clang 18+ (scalar storage up to 128 bits via
-`_BitInt`) or GCC 13+ (via `__int128`); formats past 128 bits store
-in a `DigitVector` of limbs on both compilers, so there is no format
-ceiling on either.
-MSVC is not supported. MPFR + GMP are needed for the oracle tests
-(`apt install libmpfr-dev libgmp-dev` on Debian/Ubuntu, `brew install
-mpfr gmp` on macOS). SoftFloat and TestFloat are fetched from source
-by CMake.
+## Learning more
 
-## Layout
-
-```
-include/opine/          — Header-only library
-  core/
-    number.hpp          — Axis 1: what one value is (Primitive, FloatingPoint)
-    layout.hpp          — Axis 3: how one Number maps to bits
-    type.hpp            — Type<...> template + predefined bundles
-    rounding.hpp        — Rounding policies
-    exceptions.hpp      — Exception policies
-    platform.hpp        — Platform identity + structural parameters
-    bits.hpp            — bits_t<N> + width-safe maskLow
-    compute_format.hpp  — Operation-level precision parameter
-    pack_unpack.hpp     — bits ↔ canonical UnpackedFloat
-    digits.hpp          — DigitVector: compute-side digit geometry (limbs)
-    round_pack.hpp      — Shared pipeline: prologue + roundAndPack epilogue
-    compare.hpp         — eq / lt / le
-    neg_abs.hpp         — neg / abs
-    add.hpp / sub.hpp / mul.hpp / div.hpp
-    convert.hpp         — convert<Dst, Src> + native float/double bridges
-    arith_detail.hpp    — Shared G/R/S + overflow-mode helpers
-tests/
-  oracle/               — MPFR + SoftFloat cross-validation
-  testfloat/            — TestFloat conformance shim
-  harness/              — Test framework: adapters, iterators, generic runner
-docs/
-  design/               — Six-axis architecture, TDD methodology, format catalog
-  reference/            — Papers (IEEE 754-2019 summary), reference C sources
-examples/               — Eight self-contained showcase programs
-```
-
-## Design docs
-
-- [`design.md`](docs/design/design.md) — the six axes
-- [`problems.md`](docs/design/problems.md) — what the previous five-axis
-  design couldn't express and why
-- [`tdd.md`](docs/design/tdd.md) — testing methodology, oracle design,
-  the 12-step build sequence
-- [`catalog.md`](docs/design/catalog.md) — Number decomposition for
-  every known format
-- [`menagerie.md`](docs/design/menagerie.md) — encyclopedic catalog of
-  numeric formats
-- [`decision-tree.md`](docs/design/decision-tree.md) — a decision tree
-  that identifies any format
-- [`twos-complement.md`](docs/design/twos-complement.md) — rbj's
-  integer-ordered representation
-- [`research.md`](docs/design/research.md) — guidance distilled from
-  10 foundational floating-point papers
-- [`bits.md`](docs/design/bits.md) — guard / round / sticky mechanics
+- **[Tutorial](docs/design/tutorial.md)** — from zero to your own
+  custom format, step by step. Start here.
+- [`examples/`](examples/README.md) — ten small, commented programs.
+- [`docs/design/design.md`](docs/design/design.md) — the full
+  architecture: the axes, the pipeline, and the reasoning.
+- [`docs/design/tdd.md`](docs/design/tdd.md) — the verification
+  methodology.
+- [`docs/design/catalog.md`](docs/design/catalog.md) and
+  [`menagerie.md`](docs/design/menagerie.md) — every floating-point
+  format we could find, decomposed into the axes.
+- [`docs/design/twos-complement.md`](docs/design/twos-complement.md)
+  — the integer-sortable encoding, and why it's interesting.
 
 ## License
 
