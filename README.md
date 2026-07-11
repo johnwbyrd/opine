@@ -42,10 +42,15 @@ answer.
 
 That combination is the point. Libraries that are *fast* for one
 format exist. Libraries that are *big* exist. What hasn't existed is
-one place where all of these formats are **complete** (arithmetic,
-comparison, conversion, printing, parsing, exception flags — the
-whole IEEE 754 operation set) and **demonstrably correct**, side by
-side, under a single API.
+one place where all of these formats are:
+
+- **Complete** -- arithmetic, comparison, conversion, printing,
+  parsing, exception flags — the whole IEEE 754 operation set
+- **Demonstrably correct**, AND
+- **FAST**, with the lion's share of the computation and
+  error-checking, happening at compile time.
+
+Now you get all that side by side, under a single API.
 
 ## What you can do with it
 
