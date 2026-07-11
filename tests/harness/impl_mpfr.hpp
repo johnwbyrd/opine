@@ -129,8 +129,10 @@ template <typename BitsType> BitsType mpzToBits(const mpz_t Z) {
     mpz_export(Bytes, nullptr, -1, 1, 0, 0, Z);
     BitsType Val = 0;
     for (int I = NumBytes - 1; I >= 0; --I) {
-      if (I != NumBytes - 1)
-        Val <<= 8;
+      if constexpr (NumBytes > 1) { // compile the shift only in-width
+        if (I != NumBytes - 1)
+          Val <<= 8;
+      }
       Val |= BitsType(Bytes[I]);
     }
     return Val;

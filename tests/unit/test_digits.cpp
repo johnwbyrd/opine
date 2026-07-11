@@ -11,8 +11,10 @@
 //      reconstruction, shift algebra, carry-chain adversaries).
 //      Runs everywhere — no reference integer needed.
 //   4. (Clang) Randomized differential tests against unsigned
-//      _BitInt at widths 40–2048, including direct bridges to the
-//      scalar production helpers arith_detail::shiftRightSticky and
+//      _BitInt at widths 40–2048 — as far as the compiler's
+//      __BITINT_MAXWIDTH__ reaches (LLVM Clang: all of them; Apple
+//      Clang stops at 128) — including direct bridges to the scalar
+//      production helpers arith_detail::shiftRightSticky and
 //      arith_detail::msbPos. _BitInt is the reference; the digit
 //      layer must reproduce it bit-for-bit.
 
@@ -338,12 +340,20 @@ TEST_CASE("digits: wide-width invariants (128/256/1024-bit)") {
 // -----------------------------------------------------------------
 // 4. Differential vs _BitInt (Clang only)
 // -----------------------------------------------------------------
-// bits_t<W> on Clang is unsigned _BitInt(W) at any width, and the
-// digit layer's declared semantics are exactly _BitInt's. Also
-// bridges to the scalar production helpers: shiftRightSticky and
-// msbPos must agree with their digit-vector counterparts.
+// bits_t<W> on Clang is unsigned _BitInt(W), and the digit layer's
+// declared semantics are exactly _BitInt's. Also bridges to the
+// scalar production helpers: shiftRightSticky and msbPos must agree
+// with their digit-vector counterparts.
+//
+// _BitInt's reach is the compiler's, not the language's:
+// __BITINT_MAXWIDTH__ is 8388608 on LLVM Clang but only 128 on
+// Apple Clang. Each width below runs only where the compiler can
+// express BOTH it and its double (the full-product check compares
+// against bits_t<2W>); inexpressible widths keep their coverage
+// from the section-3 invariant battery, which needs no reference
+// integer.
 
-#if defined(__clang__)
+#if defined(__clang__) && defined(__BITINT_MAXWIDTH__)
 
 namespace {
 
@@ -422,15 +432,26 @@ template <typename Limb, int Count> void differential(std::uint64_t seed) {
   CHECK(failed == 0);
 }
 
+// Instantiate a width's differential only when the compiler can
+// express it; the if constexpr keeps the wide bits_t aliases from
+// ever being formed on compilers that would reject them.
+template <typename Limb, int Count>
+void differentialWhereExpressible(std::uint64_t seed) {
+  if constexpr (2L * DigitVector<Limb, Count>::total_bits <=
+                __BITINT_MAXWIDTH__)
+    differential<Limb, Count>(seed);
+}
+
 } // namespace
 
 TEST_CASE("digits: differential vs _BitInt (40..2048-bit, clang)") {
-  differential<std::uint8_t, 5>(0xA1);   // 40-bit, narrow limbs
-  differential<std::uint32_t, 3>(0xA2);  // 96-bit
-  differential<std::uint64_t, 2>(0xA3);  // 128-bit
-  differential<std::uint64_t, 4>(0xA4);  // 256-bit
-  differential<std::uint64_t, 16>(0xA5); // 1024-bit
-  differential<std::uint64_t, 32>(0xA6); // 2048-bit
+  differentialWhereExpressible<std::uint8_t, 5>(0xA1);   // 40-bit, narrow
+  differentialWhereExpressible<std::uint32_t, 2>(0xA7);  // 64-bit
+  differentialWhereExpressible<std::uint32_t, 3>(0xA2);  // 96-bit
+  differentialWhereExpressible<std::uint64_t, 2>(0xA3);  // 128-bit
+  differentialWhereExpressible<std::uint64_t, 4>(0xA4);  // 256-bit
+  differentialWhereExpressible<std::uint64_t, 16>(0xA5); // 1024-bit
+  differentialWhereExpressible<std::uint64_t, 32>(0xA6); // 2048-bit
 }
 
-#endif // __clang__
+#endif // __clang__ && __BITINT_MAXWIDTH__
