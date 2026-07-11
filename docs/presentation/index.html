@@ -10,29 +10,43 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
 
   <style>
-    .reveal { font-size: 34px; }
-    .reveal h1 { font-size: 1.9em; text-transform: none; }
-    .reveal h2 { font-size: 1.25em; text-transform: none; }
-    .reveal pre { width: 100%; box-shadow: none; }
-    .reveal pre code { max-height: 560px; padding: 18px; border-radius: 8px;
-                       font-size: 0.72em; line-height: 1.35; }
-    /* Terminal output blocks */
-    .reveal pre.console { background: #101418; border-radius: 8px;
-                          padding: 16px 20px; margin: 0 auto; }
+    /* Sized for the back of the room: base body text ~42px in a
+       1280x720 deck; monospace never drops below ~0.9em of that.
+       If a block doesn't fit at these sizes, the SLIDE splits —
+       the font does not shrink. */
+    .reveal { font-size: 42px; }
+    .reveal h1 { font-size: 1.7em; text-transform: none; }
+    .reveal h2 { font-size: 1.15em; text-transform: none; margin-bottom: 0.6em; }
+    .reveal p { margin: 0.5em 0; }
+
+    /* Code + output blocks: shrink-to-fit and centered, so short
+       lines don't huddle at the left edge. */
+    .reveal pre { width: -moz-fit-content; width: fit-content;
+                  max-width: 100%; margin: 0.5em auto; box-shadow: none; }
+    .reveal pre code { max-height: none; padding: 24px 32px;
+                       border-radius: 10px; font-size: 0.9em;
+                       line-height: 1.45; }
+    .reveal pre.console { background: #101418; border-radius: 10px;
+                          padding: 20px 32px; }
     .reveal pre.console code { background: transparent; color: #9fd89f;
-                               font-size: 0.66em; line-height: 1.4;
-                               white-space: pre; }
-    .reveal .small { font-size: 0.65em; }
+                               font-size: 0.9em; line-height: 1.5;
+                               white-space: pre; padding: 0; }
+    /* For the one block that must wrap (55 digits of 0.1). */
+    .reveal pre.console.wrap code { white-space: pre-wrap;
+                                    word-break: break-all; }
+
+    .reveal .small { font-size: 0.8em; }
     .reveal .dim { color: #8899aa; }
     .reveal .hot { color: #ffcc66; }
+    .reveal .big { font-size: 1.4em; }
+
     /* Bit-field diagram */
-    .bits { display: flex; justify-content: center; gap: 4px;
-            font-family: monospace; font-size: 0.6em; margin: 0.4em 0; }
-    .bits div { padding: 10px 0; border-radius: 6px; text-align: center; }
+    .bits { display: flex; justify-content: center; gap: 6px;
+            font-family: monospace; font-size: 0.85em; margin: 0.5em 0; }
+    .bits div { padding: 16px 0; border-radius: 8px; text-align: center; }
     .bits .s { background: #b0413e; }
     .bits .e { background: #2a6f97; }
     .bits .m { background: #3a7d44; }
-    .reveal blockquote { font-style: normal; width: 90%; }
   </style>
 </head>
 <body>
@@ -44,7 +58,7 @@
   <h1>OPINE</h1>
   <p class="dim">Floating point is a set of opinions.<br>
   This library lets you hold your own.</p>
-  <p class="small dim">github.com/johnwbyrd/opine — header-only C++20</p>
+  <p class="small dim">github.com/johnwbyrd/opine</p>
   <aside class="notes">
     Welcome. This is a talk about floating-point numbers, but I promise
     it is not a talk about IEEE 754 trivia. It's a talk about a C++
@@ -59,15 +73,13 @@
 <!-- ============================================================ -->
 <section>
   <h2>Floating point used to be simple</h2>
-  <p><code>float</code> &nbsp;and&nbsp; <code>double</code></p>
+  <p class="big"><code>float</code> &nbsp; <code>double</code></p>
   <p class="fragment">Then machine learning happened:</p>
-  <p class="fragment"><code>bfloat16</code> &nbsp; <code>float16</code> &nbsp;
-     <code>FP8-E5M2</code> &nbsp; <code>FP8-E4M3</code> &nbsp;
+  <p class="fragment"><code>bfloat16</code> · <code>float16</code> ·
+     <code>FP8-E5M2</code> ·<br><code>FP8-E4M3</code> ·
      <code>FP8-E4M3FNUZ</code> ...</p>
-  <p class="fragment">And it was never actually simple:</p>
-  <p class="fragment small dim">x87 80-bit extended &nbsp;·&nbsp; IBM hex floats
-     &nbsp;·&nbsp; CDC one's-complement &nbsp;·&nbsp; binary128/256
-     &nbsp;·&nbsp; posits &nbsp;·&nbsp; ...</p>
+  <p class="fragment small dim">...and it never was simple: x87 80-bit ·
+     IBM hex floats · binary128/256 · posits · ...</p>
   <aside class="notes">
     For most of our careers, floating point meant two types. That
     world is over. ML hardware runs on 16-bit and even 8-bit floats —
@@ -87,7 +99,7 @@
   <h2>What <em>is</em> a float, though?</h2>
   <div class="bits">
     <div class="s" style="width:4%">s</div>
-    <div class="e" style="width:24%">exponent (8)</div>
+    <div class="e" style="width:24%">exp (8)</div>
     <div class="m" style="width:66%">fraction (23)</div>
   </div>
   <p class="small dim">binary32 — "float"</p>
@@ -97,9 +109,7 @@
     <div class="m" style="width:33%">frac (3)</div>
   </div>
   <p class="small dim">FP8 E4M3</p>
-  <p class="fragment">Same questions, different answers:<br>
-  <span class="small">How much precision? Does NaN exist? Negative zero?
-  What happens on overflow? Which way do we round?</span></p>
+  <p class="fragment">Same questions.<br>Different answers.</p>
   <aside class="notes">
     Strip away the details and every float format is answers to the
     same handful of questions. How many bits of precision is worth
@@ -123,74 +133,81 @@
 #include &lt;opine/opine.hpp&gt;
 using namespace opine;
 
-using f32 = float32;                    // IEEE binary32
+using f32 = float32;   // IEEE binary32
 
 auto x = fromNative&lt;f32&gt;(1.5f);
 auto y = fromNative&lt;f32&gt;(2.25f);
 auto z = add&lt;f32&gt;(x, y);
-
-printf("%g\n", double(toFloat&lt;f32&gt;(z)));
   </code></pre>
   <pre class="console"><code>3.75</code></pre>
   <aside class="notes">
     The whole API in one slide. Header-only, one include. You pick a
     format — here plain binary32. fromNative gets a value in,
-    add does arithmetic IN that format, toFloat gets it back out.
-    One thing worth noticing: operations work on bit patterns, not on
-    a wrapped number class. That's deliberate. The formats we'll use
-    in a minute don't exist in your CPU, so nothing can be allowed to
-    silently fall back to hardware floats. When every operation names
-    its format, you always know exactly which arithmetic happened.
+    add does arithmetic IN that format, toFloat gets it back out for
+    printing. One thing worth noticing: operations work on bit
+    patterns, not on a wrapped number class. That's deliberate. The
+    formats we'll use in a minute don't exist in your CPU, so nothing
+    can be allowed to silently fall back to hardware floats. When
+    every operation names its format, you always know exactly which
+    arithmetic happened.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
-  <h2>Your computer has been lying to you</h2>
+  <h2>Your computer has been<br>lying to you</h2>
   <pre><code class="language-cpp" data-trim>
 auto x = fromString&lt;float64&gt;("0.1");
 puts(toString&lt;float64&gt;(x, 60).c_str());
   </code></pre>
-  <pre class="console"><code>0.1000000000000000055511151231257827021181583404541015625</code></pre>
-  <p class="fragment small">...and in other formats:</p>
-  <pre class="fragment console"><code>fp8_e4m3   0.1015625
-float16    0.0999755859375
-float32    0.100000001490116119384765625</code></pre>
+  <pre class="fragment console wrap"><code>0.1000000000000000055511151231257827021181583404541015625</code></pre>
   <aside class="notes">
     Here's a demo for everyone who has ever printed 0.1 and gotten
-    0.1 back. No binary format can store one-tenth. Each one stores
-    its own nearest neighbor, and your language's print function
+    0.1 back. No binary format can store one-tenth. Your double
+    stores its nearest neighbor, and your language's print function
     rounds it back to "0.1" to be polite. OPINE's toString will print
     the stored value EXACTLY — every one of those 55 digits is true.
-    That's what your double actually contains.
-    And the second block: the same "0.1" in an 8-bit float is
-    0.1015625 — off by one and a half percent before you've done any
-    math at all. If you're quantizing a model to FP8, these are the
-    values your model actually sees. Now you can look at them.
+    That's what is actually in the variable. This is not a bug and
+    not sloppiness — it's a tradeoff someone chose. But you should
+    get to SEE it.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <h2>...and "0.1" in smaller formats</h2>
+  <pre class="console"><code>fp8_e4m3  0.1015625
+float16   0.0999755859375
+float32   0.100000001490116…</code></pre>
+  <p class="fragment small">An 8-bit float misses by
+  <span class="hot">1.5%</span> before you do any math at all.</p>
+  <aside class="notes">
+    Same "0.1", smaller formats. In an 8-bit float the nearest
+    storable value is 0.1015625 — one and a half percent off before
+    you've done a single operation. If you're quantizing a model to
+    FP8, these are the values your model actually sees. Now you can
+    look at them, exactly, instead of guessing.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
   <h2>π in your pocket formats</h2>
-  <pre><code class="language-cpp" data-trim>
-auto bits = fromNative&lt;fp8_e4m3&gt;(3.14159265f);   // and friends
-  </code></pre>
-  <pre class="console"><code>fp8_e5m2     bits=0x42    value=3           relerr=-4.5e-02
-fp8_e4m3     bits=0x45    value=3.25        relerr=+3.5e-02
-fp8_e4m3fnuz bits=0x4D    value=3.25        relerr=+3.5e-02
-bfloat16     bits=0x4049  value=3.140625    relerr=-3.1e-04
-float16      bits=0x4248  value=3.140625    relerr=-3.1e-04
-float32      bits=0x40490FDB  value=3.141592741  relerr=+2.8e-08</code></pre>
+  <pre class="console"><code>fp8_e5m2      3           -4.5%
+fp8_e4m3      3.25        +3.5%
+fp8_e4m3fnuz  3.25        +3.5%
+bfloat16      3.140625    -0.031%
+float32       3.14159274  +0.0000028%</code></pre>
   <aside class="notes">
-    Same value, six formats, one line of code each. Pi in FP8-E5M2 is
-    just... 3. In E4M3 it's 3.25. Notice the two E4M3 variants store
-    different BITS — 0x45 versus 0x4D — for the same value, because
-    they disagree about how the encoding works. That's the kind of
-    detail that burns you when you're moving tensors between vendors.
-    This table is the honest version of "how much accuracy do I give
-    up at each width" — measured, not estimated, because the
-    arithmetic is bit-exact for every one of these formats.
+    Same value, five formats, one conversion each. Pi in FP8-E5M2 is
+    just... 3. In E4M3 it's 3.25. A fun detail hiding in the middle:
+    the two E4M3 variants show the same VALUE here, but they store
+    different BITS for it — 0x45 versus 0x4D — because they disagree
+    about how the encoding works. That's exactly the kind of detail
+    that burns you when tensors move between vendors. This table is
+    the honest answer to "how much accuracy do I give up at each
+    width" — measured, not estimated, because the arithmetic is
+    bit-exact for every format on the slide.
   </aside>
 </section>
 
@@ -198,28 +215,26 @@ float32      bits=0x40490FDB  value=3.141592741  relerr=+2.8e-08</code></pre>
 <section>
   <h2>Invent a float before lunch</h2>
   <pre><code class="language-cpp" data-trim>
-// 12 bits: 1 sign + 5 exponent + 6 fraction. Why not?
-using MyFp12 = Type&lt;numbers::IEEE754&lt;5, 6&gt;,
-                    layouts::IEEE&lt;5, 6, true&gt;&gt;;
+// 12 bits: 1 sign + 5 exp + 6 fraction
+using MyFp12 =
+    Type&lt;numbers::IEEE754&lt;5, 6&gt;,
+         layouts::IEEE&lt;5, 6, true&gt;&gt;;
 
 auto x = fromNative&lt;MyFp12&gt;(3.14159f);
-puts(toString&lt;MyFp12&gt;(x, 6).c_str());
   </code></pre>
   <pre class="console"><code>3.15625</code></pre>
-  <p class="fragment small dim">Every operation, every conversion, string I/O,
-  the whole test battery — all of it works on <code>MyFp12</code>, immediately.</p>
   <aside class="notes">
     Suppose FP8 is too coarse for your data and FP16 is wasteful.
-    Here's a 12-bit float — one using-declaration. It is not a
-    second-class citizen: add, multiply, square root, fused
-    multiply-add, conversion to and from every other format, exact
-    decimal printing — everything works on it the moment it's
-    declared, because it's the same pipeline as the standard formats
-    with different numbers plugged in.
-    If you design accelerator hardware, or you're evaluating someone
-    who does, this is prototyping a number system before silicon
-    exists. The compiler specializes everything at compile time;
-    there's no interpreter in the loop.
+    Here's a 12-bit float — one using-declaration, and there's pi
+    living in it. It is not a second-class citizen: add, multiply,
+    square root, fused multiply-add, conversion to and from every
+    other format, exact decimal printing — everything works on it
+    the moment it's declared, because it's the same pipeline as the
+    standard formats with different numbers plugged in.
+    If you design accelerator hardware, or evaluate people who do,
+    this is prototyping a number system before silicon exists. And
+    the compiler specializes everything at compile time — there's no
+    interpreter in the loop.
   </aside>
 </section>
 
@@ -227,118 +242,141 @@ puts(toString&lt;MyFp12&gt;(x, 6).c_str());
 <section>
   <h2>Sort floats as plain integers</h2>
   <pre><code class="language-cpp" data-trim>
-using rbj8 = RbjType&lt;4, 3&gt;;   // two's-complement float encoding
+// a two's-complement FLOAT encoding
+using rbj8 = RbjType&lt;4, 3&gt;;
 
-// The array holds FLOAT values. Sort it as signed bytes:
-std::sort(reinterpret_cast&lt;int8_t*&gt;(begin),
-          reinterpret_cast&lt;int8_t*&gt;(end));
+std::sort((int8_t*)begin,   // !!
+          (int8_t*)end);
   </code></pre>
-  <pre class="console"><code>== rbj FP8 (two's complement) ==
- before   1.0  -1.0  0.0  0.5  -0.5  2.5  -2.5  4.0  -4.0
- after   -4.0  -2.5  -1.0  -0.5  0.0  0.5  1.0  2.5  4.0   ✓
-
-== IEEE FP8 (sign-magnitude) ==
- after   -0.5  -1.0  -2.5  -4.0  0.0  0.5  1.0  2.5  4.0   ✗</code></pre>
+  <pre class="console"><code>before  1.0 -1.0 .5 -.5 2.5 -2.5
+after  -2.5 -1.0 -.5 .5 1.0 2.5 ✓</code></pre>
   <aside class="notes">
-    Now for a party trick with a real point. This format — an idea
-    from the DSP world, and how the PDP-10 did it decades ago —
-    encodes floats in two's complement, like ordinary signed
-    integers. The consequence: integer order IS float order. You can
-    std::sort float data as raw bytes and it comes out numerically
-    sorted. Try that with IEEE floats — bottom block — and the
-    negatives come out backwards, because IEEE uses sign-magnitude.
+    Now a party trick with a real point. This format — an idea from
+    the DSP world, and how machines like the PDP-10 did it decades
+    ago — encodes floats in two's complement, like ordinary signed
+    integers. The consequence: integer order IS float order. This
+    array holds FLOAT values, and I'm sorting it as raw signed
+    bytes — and it comes out numerically sorted. Do the same with
+    IEEE floats and the negatives come out backwards, because IEEE
+    is sign-magnitude.
     Why show this? Because it's a LAYOUT opinion with a superpower —
-    think radix sort, think comparing floats in hardware that only
-    has integer comparators. IEEE chose differently for good reasons.
-    But it was a choice, and in OPINE, choices are template
-    parameters. This encoding is fully supported: same arithmetic,
-    same tests, same everything.
+    think radix sort, think hardware that only has integer
+    comparators. IEEE chose differently, for good reasons. But it
+    was a choice — and in OPINE, choices are template parameters.
+    This encoding gets the same arithmetic and the same tests as
+    everything else.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
   <h2>One addition, six answers</h2>
-  <p class="small dim">1.0 + (half a last-digit) — exactly halfway between
-  two representable values</p>
-  <pre class="console"><code>ToNearestTiesToEven   1.0          ← the default: tie goes to even
-ToNearestTiesAway     1.00000012   ← tie rounds up
-TowardZero            1.0
-TowardPositive        1.00000012
-TowardNegative        1.0
-ToOdd                 1.00000012   ← always jam the last bit</code></pre>
-  <p class="fragment small">The mode is a template parameter:</p>
-  <pre class="fragment"><code class="language-cpp" data-trim>
-using f32_up = Type&lt;numbers::IEEE754&lt;8, 23&gt;,
-                    layouts::IEEE&lt;8, 23, true&gt;,
-                    rounding::TowardPositive&gt;;
-  </code></pre>
+  <p class="small dim">1.0 + half a last-digit — a perfect tie</p>
+  <pre class="console"><code>TiesToEven   1.0         ← default
+TiesAway     1.00000012
+TowardZero   1.0
+TowardPos    1.00000012
+TowardNeg    1.0
+ToOdd        1.00000012</code></pre>
   <aside class="notes">
     Rounding. When a result lands exactly halfway between two
     representable values, somebody has to pick a side. Here is the
     same addition under all six rounding modes — six different
-    opinions, six answers, and every one of them is "correct" by its
-    own rules.
-    Your CPU supports four of these, and switching them at runtime is
-    a global-state headache. In OPINE the mode is part of the type,
-    so two modes can coexist in one program, statically, with no
-    flags to leak. The weird one at the bottom, round-to-odd, is a
-    specialist's tool: it makes intermediate results safe to round a
-    second time. If you've never needed it, ignore it. If you have —
-    you know how rare it is to find it implemented and tested.
+    opinions, six answers, and every one is "correct" by its own
+    rules. The default, ties-to-even, rounds DOWN here because 1.0's
+    last bit is even. Ties-away rounds up. The directed modes go
+    where they're pointed. And round-to-odd at the bottom is the
+    specialist's tool — it makes intermediate results safe to round
+    a second time. If you've never needed it, ignore it; if you
+    have, you know how rare it is to find it implemented and tested.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <h2>The mode is part of the type</h2>
+  <pre><code class="language-cpp" data-trim>
+using f32_up =
+    Type&lt;numbers::IEEE754&lt;8, 23&gt;,
+         layouts::IEEE&lt;8, 23, true&gt;,
+         rounding::TowardPositive&gt;;
+  </code></pre>
+  <p class="fragment small">No global state. Two modes can coexist<br>
+  in one program, statically.</p>
+  <aside class="notes">
+    On a CPU, the rounding mode is a global control register —
+    changing it is a whole-program side effect, and library code that
+    flips it and forgets to restore it causes legendary bugs. In
+    OPINE the mode is a template parameter: it's part of the type,
+    two modes coexist in one binary, and nothing can leak. Interval
+    arithmetic — where you compute every bound twice, once rounding
+    down and once rounding up — falls out naturally: they're just two
+    types.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
   <h2>When the answer doesn't fit</h2>
-  <p class="small dim">128 × 512 in FP8-E5M2 (max finite value: 57344)</p>
-  <pre class="console"><code>ToNearestTiesToEven   +inf        ← round up, off the end
-TowardZero             57344      ← saturate at the edge
-ToOdd                  57344</code></pre>
-  <pre class="fragment"><code class="language-cpp" data-trim>
-// Or make every operation report what happened:
-auto r = mul&lt;E5M2Status&gt;(a, b);       // returns {bits, flags}
-if (r.flags &amp; FlagOverflow) { /* you KNOW */ }
-  </code></pre>
-  <pre class="fragment console"><code>bits 0x7B (57344)   overflow=1  inexact=1</code></pre>
+  <p class="small dim">128 × 512 in FP8 — max finite is 57344</p>
+  <pre class="console"><code>ToNearest    +inf   ← off the end
+TowardZero   57344  ← saturate
+ToOdd        57344</code></pre>
   <aside class="notes">
-    Overflow is another opinion. The IEEE rule is subtle: an
-    overflowing result becomes infinity only when the rounding mode
-    would carry you upward — round toward zero pins you at the
-    biggest finite value instead. And formats without an infinity
-    encoding, like the FNUZ FP8, always saturate.
-    The second half matters more in practice: how do you FIND OUT it
-    happened? OPINE makes that a policy too. Silent — the default.
-    Sticky flags you can poll. Or, my favorite, every operation
-    returns its result bits together with its flags. Saturation
-    without a flag is silent data corruption; saturation WITH a flag
-    is a diagnosable event. In FP8, where the whole number line ends
-    at 57344, you overflow a lot — you want to know.
+    Overflow is another opinion. The IEEE rule is subtler than most
+    people remember: an overflowing result becomes infinity only when
+    the rounding mode would carry you upward. Round toward zero pins
+    you at the biggest finite value instead. And formats without an
+    infinity encoding — like the FNUZ FP8 — always saturate, in every
+    mode. In an 8-bit format whose whole number line ends at 57344,
+    you hit this constantly. Which raises the real question — how do
+    you find out it happened? Next slide.
+  </aside>
+</section>
+
+<!-- ============================================================ -->
+<section>
+  <h2>...and the result tells you</h2>
+  <pre><code class="language-cpp" data-trim>
+// every op returns {bits, flags}
+auto r = mul&lt;E5M2Status&gt;(a, b);
+
+if (r.flags &amp; FlagOverflow)
+  // you KNOW. no guessing.
+  </code></pre>
+  <pre class="console"><code>57344   overflow=1  inexact=1</code></pre>
+  <aside class="notes">
+    How errors are reported is a policy too — the third axis. Silent,
+    which is the default. Sticky flags you can poll, like a CPU. Or
+    my favorite, shown here: every operation returns its result bits
+    TOGETHER with its flags. Same multiply as the last slide — the
+    saturated value comes back carrying "overflow happened, and the
+    result is inexact."
+    Saturation without a flag is silent data corruption. Saturation
+    WITH a flag is a diagnosable event. That one-word difference is
+    a debugging session you don't have.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
   <h2>The answer multiplication erases</h2>
-  <p class="small dim">(1+ε)² − (1+2ε) = ε² &nbsp; ...with ε one unit in the
-  last place of 1.0</p>
+  <p class="small dim">(1+ε)² − (1+2ε) = ε² &nbsp; ...algebraically</p>
   <pre><code class="language-cpp" data-trim>
-auto unfused = add&lt;f32&gt;(mul&lt;f32&gt;(a, a), minus_b);
-auto fused   = fma&lt;f32&gt;(a, a, minus_b);
+auto u = add&lt;f32&gt;(mul&lt;f32&gt;(a, a), c);
+auto f = fma&lt;f32&gt;(a, a, c);
   </code></pre>
-  <pre class="console"><code>mul then add : 0
-fma          : 1.42108547e-14      (= ε², exactly)</code></pre>
+  <pre class="console"><code>mul then add:  0
+fma:           1.42108547e-14  = ε²</code></pre>
   <aside class="notes">
-    Fused multiply-add, the operation modern hardware is built
-    around. Algebraically this expression equals epsilon squared — a
-    tiny but perfectly real number. Compute it the obvious way and
-    you get zero: the multiply has to round its result before the
-    subtraction, and epsilon squared is exactly the part that rounds
-    away. The fused version keeps the entire double-width product
-    alive until one single rounding at the end — and there's the true
-    answer.
-    This isn't a curiosity: fma is the engine inside dot products,
+    Fused multiply-add — the operation modern hardware is built
+    around. This expression equals epsilon squared: a tiny but
+    perfectly real number. Compute it the obvious way and you get
+    zero — the multiply must round before the subtraction, and
+    epsilon squared is exactly the part that rounds away. The fused
+    version keeps the whole double-width product alive until one
+    single rounding at the end. There's the true answer.
+    This isn't a curiosity. fma is the engine inside dot products,
     polynomial evaluation, and every compensated-arithmetic trick in
     the numerical toolbox. OPINE's is genuinely fused — one rounding
     — in every format, including formats no hardware fma has ever
@@ -349,88 +387,84 @@ fma          : 1.42108547e-14      (= ε², exactly)</code></pre>
 <!-- ============================================================ -->
 <section>
   <h2>Turn the precision knob</h2>
-  <p class="small dim">Rump's polynomial (1988) at x=77617, y=33096 —
-  true answer ≈ −0.8274</p>
-  <pre class="console"><code>float32     -6.34e+29          wrong magnitude
-float64     -1.18e+21          wrong magnitude
-float128     1.1726            wrong SIGN
-float256    -0.8273960599      correct — finally
-float1024   -0.8273960599      correct</code></pre>
-  <p class="fragment small">Same source code. The only change is the type.</p>
+  <p class="small dim">Rump's polynomial (1988) — true answer ≈ −0.8274</p>
+  <pre class="console"><code>float32    -6.3e+29   wrong
+float64    -1.2e+21   wrong
+float128    1.1726    wrong SIGN
+float256   -0.82740   correct
+float1024  -0.82740   correct</code></pre>
+  <p class="fragment small">Same source code. Only the type changes.</p>
   <aside class="notes">
     This polynomial is famous. In double precision it returns minus a
-    billion trillion — with total confidence, no warning. This isn't
-    an exotic bug; it's catastrophic cancellation, and it lives in
+    billion trillion — with total confidence, no warning. That's not
+    an exotic bug; it's catastrophic cancellation, and it hides in
     ordinary-looking arithmetic.
     Here's the experiment nothing else lets you run this easily: the
-    same code at every precision. Watch the answer: garbage at 32
-    bits, garbage at 64, at 128 bits it has the wrong SIGN — arguably
-    the scariest row — and at 256 bits the truth finally appears. If
-    you suspect a numerical stability problem in real code, this is
-    the diagnostic: crank the knob and see where your answer stops
-    changing. And because these wide formats run the same verified
-    pipeline, float256 isn't a different library with different
-    semantics. It's the same opinions, wider.
+    same code at every precision. Garbage at 32 bits. Garbage at 64.
+    At 128 bits it has the wrong SIGN — arguably the scariest row on
+    the slide. At 256 bits, the truth finally appears. If you suspect
+    numerical instability in real code, this is the diagnostic: crank
+    the knob and watch where your answer stops changing. And because
+    the wide formats run the same verified pipeline, float256 isn't a
+    different library with different semantics — it's the same
+    opinions, wider.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
-  <h2>1024-bit floats. Schoolbook arithmetic.</h2>
-  <p class="small dim">π by the Bailey–Borwein–Plouffe series, using only
-  + − × ÷ in <code>float1024</code>, printed by <code>toString</code>:</p>
-  <pre class="console"><code>3.14159265358979323846264338327950288419716939937510582097
-4944592307816406286208998628034825342117067982148086513282
-3066470938446095505822317253594081284811174502841027019385
-2110555964462294895493038196442881097566593344612847564823
-3786783165271201909145648566923460348610454326648213393607
-26024914128...</code></pre>
-  <p class="fragment small">300 correct digits. Every digit of the printout
-  is correctly rounded too.</p>
+  <h2>1024-bit floats. Same code.</h2>
+  <p class="small dim">π via Bailey–Borwein–Plouffe, in <code>float1024</code>,
+  using only + − × ÷</p>
+  <pre class="console"><code>3.14159265358979323846264338
+3279502884197169399375105820
+9749445923078164062862089986
+2803482534211706798214808651
+3282306647093844609550582231
+7253594081284811174502841…</code></pre>
   <aside class="notes">
     The ladder goes all the way up: IEEE's formula defines a
     binary1024 format, so OPINE implements it — 997 bits of
     precision, about 300 decimal digits. Here's pi computed with
-    nothing but add, subtract, multiply, divide, in that format. And
-    printing 300 digits is its own achievement: the decimal
-    conversion is correctly rounded at every width, so every digit on
-    this slide is genuinely a digit of pi. There is no size ceiling
-    in the library — arithmetic runs on arrays of machine words sized
-    to the job, on any supported compiler. Not the fastest bignum in
-    the world, and not trying to be: it's the same verified pipeline
-    as the 8-bit formats, just wider. One library, 8 to 1024 bits.
+    nothing but add, subtract, multiply, divide, in that format —
+    this slide shows the first 160-odd digits, and every single one
+    is correct, including the printing: the decimal conversion is
+    correctly rounded at every width, so turning bits into digits
+    loses nothing. There is no size ceiling in the library —
+    arithmetic runs on arrays of machine words sized to the job.
+    It's not the fastest bignum in the world and isn't trying to be:
+    it's the SAME verified pipeline as the 8-bit formats, just
+    wider. One library, 8 bits to 1024.
   </aside>
 </section>
 
 <!-- ============================================================ -->
 <section>
   <h2>Why believe any of this?</h2>
-  <p style="font-size:1.5em">every · possible · input</p>
-  <p class="small">For 8-bit formats, the tests don't sample: all
-  256 × 256 = 65,536 input pairs, for every operation, every encoding,
-  every rounding mode, bits <em>and</em> flags — millions of checks
-  against an independent <span class="hot">MPFR</span>-based oracle.</p>
-  <p class="fragment small">Plus second and third opinions:
-  <span class="hot">Berkeley SoftFloat</span> and
-  <span class="hot">Berkeley TestFloat</span> — the same conformance
-  suite hardware FPU vendors run.</p>
+  <p class="big">every · possible · input</p>
+  <p class="small">8-bit formats: all 65,536 input pairs ×<br>
+  every op × every encoding × every mode,<br>
+  bits <em>and</em> flags, vs an independent
+  <span class="hot">MPFR</span> oracle.</p>
+  <p class="fragment small">Plus <span class="hot">Berkeley SoftFloat</span>
+  and <span class="hot">TestFloat</span> —<br>what FPU vendors use to
+  qualify silicon.</p>
   <aside class="notes">
     Fair question, because floating-point code is famously easy to
-    get subtly wrong. The answer is the part of the project I'd
-    defend hardest. Small formats get EXHAUSTIVE verification —
-    every one of the 65,536 possible input pairs, for every
-    operation, every encoding, and every rounding mode, which
-    multiplies out to millions of comparisons — each one checked
-    bit-for-bit against a reference built on MPFR, the
-    arbitrary-precision library the numerical community trusts. The oracle shares no
-    code with the library — it has caught real bugs in the library,
-    and the library has caught bugs in the oracle. That
-    cross-pressure is the design. IEEE formats additionally run
-    against Berkeley SoftFloat and through Berkeley TestFloat, which
-    is what actual FPU designers use to qualify silicon. Wider
-    formats get structured and randomized batteries up through
-    binary1024. When a slide earlier said "exactly," this is why the
-    word was safe to use.
+    get subtly wrong. This is the part of the project I'd defend
+    hardest. Small formats get EXHAUSTIVE verification — every one of
+    the 65,536 possible input pairs, for every operation, every
+    encoding, and every rounding mode; it multiplies out to millions
+    of comparisons, each checked bit-for-bit against a reference
+    built on MPFR, the arbitrary-precision library the numerical
+    community trusts. The oracle shares no code with the library. It
+    has caught real bugs in the library, and the library has caught
+    real bugs in the oracle — that cross-pressure is the design.
+    IEEE formats additionally run against Berkeley SoftFloat and
+    through Berkeley TestFloat, the same conformance suite hardware
+    FPU designers use. Wider formats get structured plus randomized
+    batteries up through binary1024. When an earlier slide said
+    "exactly," this is why the word was safe.
   </aside>
 </section>
 
@@ -439,21 +473,21 @@ float1024   -0.8273960599      correct</code></pre>
   <h2>Getting it</h2>
   <pre><code class="language-cmake" data-trim>
 add_subdirectory(opine)
-target_link_libraries(my_app PRIVATE opine)
+target_link_libraries(app PRIVATE opine)
   </code></pre>
   <pre><code class="language-cpp" data-trim>
 #include &lt;opine/opine.hpp&gt;
   </code></pre>
-  <p class="small dim">Header-only · C++20 · Clang 18+ / GCC 13+ ·
-  no dependencies to use it</p>
+  <p class="small dim">header-only · C++20 · Clang 18+ / GCC 13+<br>
+  no dependencies</p>
   <aside class="notes">
-    Adoption cost: one include. It's header-only C++20 with zero
+    Adoption cost: one include. Header-only C++20 with zero
     dependencies — MPFR only exists in the test suite. Clang or GCC.
     The repo ships thirteen small example programs; everything you
-    saw today is one of them, and each is a single short file you
-    can read over coffee. There's also a step-by-step tutorial
-    written for developers who've never thought about float
-    internals — it gets you from nothing to your own custom format.
+    saw today is one of them, each a single short file you can read
+    over coffee. There's also a step-by-step tutorial written for
+    developers who've never thought about float internals — it takes
+    you from nothing to your own custom format.
   </aside>
 </section>
 
@@ -461,16 +495,16 @@ target_link_libraries(my_app PRIVATE opine)
 <section>
   <h1>Have opinions.</h1>
   <p class="dim">github.com/johnwbyrd/opine</p>
-  <p class="small dim">tutorial: docs/design/tutorial.md · examples: examples/</p>
+  <p class="small dim">tutorial: docs/design/tutorial.md</p>
   <aside class="notes">
     The takeaway: floating point is not a fact of nature you have to
     accept — it's a set of engineering tradeoffs someone chose for
-    you. Usually they chose well! But now the zoo is here: FP8 in
-    your models, bfloat16 in your accelerators, maybe a custom format
-    in your next chip. OPINE gives you one place where all of them —
-    the careful ones, the sloppy-on-purpose ones, the ones you invent
-    — are complete, verified, and side by side. Go have opinions
-    about your floats. Questions?
+    you. Usually they chose well! But the zoo is here: FP8 in your
+    models, bfloat16 in your accelerators, maybe a custom format in
+    your next chip. OPINE gives you one place where all of them —
+    the careful ones, the sloppy-on-purpose ones, the ones you
+    invent — are complete, verified, and side by side. Go have
+    opinions about your floats. Questions?
   </aside>
 </section>
 
@@ -482,6 +516,9 @@ target_link_libraries(my_app PRIVATE opine)
 <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
 <script>
   Reveal.initialize({
+    width: 1280,
+    height: 720,
+    margin: 0.05,
     hash: true,
     slideNumber: "c/t",
     transition: "fade",
