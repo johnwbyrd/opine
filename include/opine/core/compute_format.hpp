@@ -4,7 +4,17 @@
 // ComputeFormat: parameter of *operations*, not values.
 //
 // Describes the working precision at which arithmetic executes.
-// Currently expressed in bits — the design calls for digit units
+// The live knob is mant_bits: when it is smaller than the Number's
+// significand precision, every arithmetic kernel truncates its
+// operands to the top mant_bits significand bits on ingest
+// (computeOperand in round_pack.hpp) — the storage format and
+// interchange bits stay full-width, only the math gets cheaper.
+// WithComputePrecision<T, K> in type.hpp is the convenient
+// spelling. guard_bits and the exponent headroom are carried but
+// not yet independently wired; reducing them (capped alignment
+// shifts for slow adders) is future work along the same seam.
+//
+// Widths are expressed in bits — the design calls for digit units
 // so that decimal (digit_width=4) and character (digit_width=8)
 // arithmetic can share the shape. That generalization is deferred
 // until non-binary arithmetic is implemented.

@@ -120,6 +120,41 @@ unpackOperand(typename T::storage_type bits) {
   return u;
 }
 
+// unpackOperand + working-precision truncation: how the ARITHMETIC
+// kernels (add/sub/mul/div/fma/sqrt) receive an operand. When the
+// Type's compute_format carries fewer significand bits than the
+// Number (see WithComputePrecision in type.hpp), the low bits of
+// the significand FIELD are cleared — positional truncation, so
+// normals keep their top K significant bits and subnormals truncate
+// on the same fixed absolute grid, exactly what masking a register
+// costs on a small target. This happens BEFORE the kernel's
+// special-value grid: a subnormal truncated to nothing takes part
+// in the operation as a signed zero (so at K=8, denormal × Inf is
+// 0 × Inf — invalid — by definition; the oracle applies the same
+// order). Truncation itself raises no flags; inexact means inexact
+// relative to the truncated operands. The comparison,
+// classification, conversion, and string operations are NOT
+// truncated — they see the stored value.
+//
+// At full compute precision (every predefined Type) this compiles
+// to unpackOperand exactly.
+template <typename T>
+constexpr UnpackedFloat<typename T::storage_type>
+computeOperand(typename T::storage_type bits) {
+  UnpackedFloat<typename T::storage_type> u = unpackOperand<T>(bits);
+  constexpr int P = T::number::significand::digit_count;
+  constexpr int K = T::compute_format::mant_bits;
+  if constexpr (K < P) {
+    if (u.category == ValueCategory::Finite) {
+      u.significand = shiftWordLeft(shiftWordRight(u.significand, P - K),
+                                    P - K);
+      if (isZeroWord(u.significand))
+        u.category = ValueCategory::Zero; // truncated off the grid
+    }
+  }
+  return u;
+}
+
 // -----------------------------------------------------------------
 // Special-value packing
 // -----------------------------------------------------------------

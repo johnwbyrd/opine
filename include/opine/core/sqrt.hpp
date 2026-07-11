@@ -53,7 +53,7 @@ constexpr auto sqrt(typename T::storage_type a) {
   constexpr int GBits = detail::GuardBits;
   using DV = detail::WorkingDigits<T, 2 * (SigBits + GBits)>;
 
-  UnpackedFloat<Storage> ua = detail::unpackOperand<T>(a);
+  UnpackedFloat<Storage> ua = detail::computeOperand<T>(a);
 
   // ---------- Special value dispatch ----------
 

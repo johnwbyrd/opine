@@ -58,9 +58,9 @@ constexpr auto fma(typename T::storage_type a, typename T::storage_type b,
   constexpr int Anchor = ExactGap + 2 * SigBits - 1;
   using DV = detail::WorkingDigits<T, Anchor + 2>;
 
-  UnpackedFloat<Storage> ua = detail::unpackOperand<T>(a);
-  UnpackedFloat<Storage> ub = detail::unpackOperand<T>(b);
-  UnpackedFloat<Storage> uc = detail::unpackOperand<T>(c);
+  UnpackedFloat<Storage> ua = detail::computeOperand<T>(a);
+  UnpackedFloat<Storage> ub = detail::computeOperand<T>(b);
+  UnpackedFloat<Storage> uc = detail::computeOperand<T>(c);
 
   // ---------- Special value dispatch ----------
 

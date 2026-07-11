@@ -110,6 +110,13 @@ if(OPINE_HAS_ORACLE)
     target_include_directories(test_opine_string PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME test_opine_string COMMAND test_opine_string)
 
+    # ComputeFormat: reduced working precision (operand truncation)
+    # vs the oracle's independent truncation, incl. the K=P identity
+    add_executable(test_opine_compute oracle/test_opine_compute.cpp)
+    target_link_libraries(test_opine_compute PRIVATE opine MPFR::MPFR doctest_with_main)
+    target_include_directories(test_opine_compute PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME test_opine_compute COMMAND test_opine_compute)
+
     # Fused multiply-add across all Types (structural³ + random,
     # rounding sweep, fusion + flags spot checks)
     add_executable(test_opine_fma oracle/test_opine_fma.cpp)

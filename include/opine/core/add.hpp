@@ -52,8 +52,8 @@ constexpr auto addWithSign(typename T::storage_type a,
   using DV = WorkingDigits<T, SigBits + GBits + 1>;
   using Limb = typename DV::limb_type;
 
-  UnpackedFloat<Storage> ua = unpackOperand<T>(a);
-  UnpackedFloat<Storage> ub = unpackOperand<T>(b);
+  UnpackedFloat<Storage> ua = computeOperand<T>(a);
+  UnpackedFloat<Storage> ub = computeOperand<T>(b);
 
   // Subtraction: negate the unpacked b. NaN carries no sign.
   if (negate_b && ub.category != ValueCategory::NaN)

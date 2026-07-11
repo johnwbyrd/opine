@@ -56,8 +56,8 @@ constexpr auto div(typename T::storage_type a, typename T::storage_type b) {
   // The numerator is the dividend significand shifted up by K bits.
   using DV = detail::WorkingDigits<T, 2 * SigBits + GBits>;
 
-  UnpackedFloat<Storage> ua = detail::unpackOperand<T>(a);
-  UnpackedFloat<Storage> ub = detail::unpackOperand<T>(b);
+  UnpackedFloat<Storage> ua = detail::computeOperand<T>(a);
+  UnpackedFloat<Storage> ub = detail::computeOperand<T>(b);
 
   const bool result_sign = ua.sign != ub.sign;
 

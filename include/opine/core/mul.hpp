@@ -56,8 +56,8 @@ constexpr auto mul(typename T::storage_type a, typename T::storage_type b) {
   static_assert(DV::total_bits >= SigBits + GBits + 1,
                 "product geometry cannot hold the normalized form");
 
-  UnpackedFloat<Storage> ua = detail::unpackOperand<T>(a);
-  UnpackedFloat<Storage> ub = detail::unpackOperand<T>(b);
+  UnpackedFloat<Storage> ua = detail::computeOperand<T>(a);
+  UnpackedFloat<Storage> ub = detail::computeOperand<T>(b);
 
   const bool result_sign = ua.sign != ub.sign;
 

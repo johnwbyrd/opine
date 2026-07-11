@@ -318,30 +318,86 @@ MpfrFloat decodeToMpfr(typename FloatType::storage_type Bits) {
 // Exact arithmetic operations at 256-bit precision
 // ===================================================================
 
-// The Rounding policy is threaded through as an MPFR mode because of
-// IEEE 754 §6.3: an exact zero sum is -0 under roundTowardNegative
-// and +0 under every other mode, and MPFR applies that rule at the
-// operation, not at the later format-rounding step. Only RNDD ever
-// differs from RNDN here — the numeric rounding at 256-bit working
-// precision is floor in both steps for TowardNegative, and floor is
-// idempotent across precisions, so no double-rounding hazard.
+// The working-precision rounding mode must COMPOSE with the final
+// format rounding, or the oracle double-rounds. The rules:
+//
+//   - Directed final modes use the same directed mode here:
+//     trunc/floor/ceil compose exactly across precisions
+//     (trunc_p ∘ trunc_q = trunc_p for q ≥ p), at ANY q. RNDN here
+//     would not: an exact sum lying within half a working-ulp below
+//     a representable boundary rounds up ONTO it, and the directed
+//     final rounding then keeps a value the true result never
+//     reached. Unreachable for full-precision operands in the
+//     tested range (their sum lattice is too coarse), but reduced
+//     compute precision (single-bit truncated subnormals) hits it.
+//   - Nearest final modes use RNDN, innocuous at q ≥ 2p+2 — the
+//     midpoint-distance lattice argument holds for truncated
+//     operands too, since format-grid values stay ½ulp_p away from
+//     midpoints.
+//   - ToOdd uses RNDZ plus an odd-jam of the working result when
+//     the operation was inexact (see oddJam): odd-rounding
+//     famously composes with itself across precisions.
+//
+// The mode also carries IEEE 754 §6.3: an exact zero sum is -0
+// under roundTowardNegative and +0 under every other mode, and
+// MPFR applies that rule at the operation. RNDZ/RNDU/RNDN all give
+// +0 there, so the composition choice preserves it.
 template <typename Rnd> constexpr mpfr_rnd_t mpfrExactOpMode() {
-  return std::is_same_v<Rnd, rounding::TowardNegative> ? MPFR_RNDD
-                                                       : MPFR_RNDN;
+  if constexpr (std::is_same_v<Rnd, rounding::TowardNegative>)
+    return MPFR_RNDD;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardPositive>)
+    return MPFR_RNDU;
+  else if constexpr (std::is_same_v<Rnd, rounding::TowardZero> ||
+                     std::is_same_v<Rnd, rounding::ToOdd>)
+    return MPFR_RNDZ;
+  else
+    return MPFR_RNDN;
 }
 
+// Round-to-odd at V's own precision: when the preceding operation
+// was inexact (Ternary != 0), force the last significand bit to 1,
+// away from zero — V arrives RNDZ-truncated, so this is exactly
+// odd-rounding of the true result at working precision, which
+// composes with the format's final odd-rounding.
+inline void oddJam(MpfrFloat &V, int Ternary) {
+  if (Ternary == 0 || mpfr_zero_p(V) || mpfr_nan_p(V) || mpfr_inf_p(V))
+    return;
+  const mpfr_prec_t Q = mpfr_get_prec(V);
+  const mpfr_exp_t E = mpfr_get_exp(V);
+  MpfrFloat S{Q};
+  mpfr_mul_2si(S, V, long(Q) - long(E), MPFR_RNDN); // exact: integer
+  mpz_t Z;
+  mpz_init(Z);
+  mpfr_get_z(Z, S, MPFR_RNDN); // exact
+  if (mpz_even_p(Z)) {
+    if (mpz_sgn(Z) < 0)
+      mpz_sub_ui(Z, Z, 1); // magnitude +1: away from zero
+    else
+      mpz_add_ui(Z, Z, 1);
+    mpfr_set_z(S, Z, MPFR_RNDN); // |odd| ≤ 2^Q - 1: exact
+    mpfr_mul_2si(V, S, long(E) - long(Q), MPFR_RNDN);
+  }
+  mpz_clear(Z);
+}
+
+// TernaryOut (if given) receives MPFR's inexactness ternary: zero
+// iff the working-precision result is the exact real result.
 inline MpfrFloat mpfrExactOp(Op Operation, const MpfrFloat &A,
                              const MpfrFloat &B, mpfr_rnd_t Mode = MPFR_RNDN,
-                             mpfr_prec_t Prec = ExactPrecision) {
+                             mpfr_prec_t Prec = ExactPrecision,
+                             int *TernaryOut = nullptr) {
   MpfrFloat Result{Prec};
+  int T = 0;
   switch (Operation) {
-  case Op::Add: mpfr_add(Result, A, B, Mode); break;
-  case Op::Sub: mpfr_sub(Result, A, B, Mode); break;
-  case Op::Mul: mpfr_mul(Result, A, B, Mode); break;
-  case Op::Div: mpfr_div(Result, A, B, Mode); break;
-  case Op::Rem: mpfr_remainder(Result, A, B, Mode); break;
+  case Op::Add: T = mpfr_add(Result, A, B, Mode); break;
+  case Op::Sub: T = mpfr_sub(Result, A, B, Mode); break;
+  case Op::Mul: T = mpfr_mul(Result, A, B, Mode); break;
+  case Op::Div: T = mpfr_div(Result, A, B, Mode); break;
+  case Op::Rem: T = mpfr_remainder(Result, A, B, Mode); break;
   default: break;
   }
+  if (TernaryOut)
+    *TernaryOut = T;
   return Result;
 }
 
@@ -371,12 +427,16 @@ inline MpfrFloat mpfrExactUnaryOp(Op Operation, const MpfrFloat &A,
 inline MpfrFloat mpfrExactTernaryOp(Op Operation, const MpfrFloat &A,
                                     const MpfrFloat &B, const MpfrFloat &C,
                                     mpfr_rnd_t Mode,
-                                    mpfr_prec_t Prec = ExactPrecision) {
+                                    mpfr_prec_t Prec = ExactPrecision,
+                                    int *TernaryOut = nullptr) {
   MpfrFloat Result{Prec};
+  int T = 0;
   switch (Operation) {
-  case Op::MulAdd: mpfr_fma(Result, A, B, C, Mode); break;
+  case Op::MulAdd: T = mpfr_fma(Result, A, B, C, Mode); break;
   default: break;
   }
+  if (TernaryOut)
+    *TernaryOut = T;
   return Result;
 }
 
@@ -802,10 +862,15 @@ template <typename FloatType> void mpfrRoundToPrecision(MpfrFloat &Y) {
   }
 }
 
+// KnownInexact carries the working-precision ternary: the Exact
+// argument may itself be a (mode-composing) rounding of the true
+// result, in which case value comparison against it cannot see the
+// inexactness on its own.
 template <typename FloatType>
 uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
                   const MpfrFloat &Exact,
-                  typename FloatType::storage_type ResultBits) {
+                  typename FloatType::storage_type ResultBits,
+                  bool KnownInexact = false) {
   using Num = typename FloatType::number;
   using Fmt = typename FloatType::layout;
   using BitsType = typename FloatType::storage_type;
@@ -849,7 +914,7 @@ uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
   // Same-sign infinities compare equal; Â±0 compare equal (the sign
   // of an exact zero is a Â§6.3 rule, not an inexactness).
   MpfrFloat Back = decodeToMpfr<FloatType>(ResultBits);
-  if (!mpfr_equal_p(Back, Exact))
+  if (KnownInexact || !mpfr_equal_p(Back, Exact))
     Flags |= opine::FlagInexact;
 
   if (!Exact.isInf() && !Exact.isZero()) {
@@ -885,6 +950,37 @@ uint8_t mpfrFlags(Op O, const MpfrFloat &Ma, const MpfrFloat &Mb,
 // MpfrAdapter — the adapter struct
 // ===================================================================
 
+// Working-precision truncation, mirroring the library's
+// computeOperand (round_pack.hpp): when the Type's compute_format
+// carries fewer significand bits than the Number, each decoded
+// operand loses the low bits of its significand FIELD before the
+// exact operation. Positional truncation: a normal keeps its top K
+// significant bits (mpfr_prec_round toward zero), a subnormal
+// truncates on the fixed absolute grid 2^(emin - K + 1), and a
+// value that truncates to nothing becomes a signed zero. At full
+// precision this is a no-op, compiled away.
+template <typename FloatType> void truncateToCompute(MpfrFloat &V) {
+  using Num = typename FloatType::number;
+  constexpr int P = Num::significand::digit_count;
+  constexpr int K = FloatType::compute_format::mant_bits;
+  if constexpr (K < P) {
+    if (mpfr_nan_p(V) || mpfr_inf_p(V) || mpfr_zero_p(V))
+      return;
+    constexpr long EminUnb = 1 - Num::exponent_bias;
+    MpfrFloat MinNorm{oraclePrecision<FloatType>};
+    mpfr_set_ui_2exp(MinNorm, 1, mpfr_exp_t(EminUnb), MPFR_RNDN);
+    if (mpfr_cmpabs(V, MinNorm) >= 0) {
+      mpfr_prec_round(V, mpfr_prec_t(K), MPFR_RNDZ);
+      return;
+    }
+    // Subnormal range: truncate toward zero on the fixed grid.
+    const long GridExp = EminUnb - K + 1;
+    mpfr_mul_2si(V, V, -GridExp, MPFR_RNDN);
+    mpfr_rint(V, V, MPFR_RNDZ);
+    mpfr_mul_2si(V, V, GridExp, MPFR_RNDN);
+  }
+}
+
 template <typename FloatType> struct MpfrAdapter {
   using BitsType = typename FloatType::storage_type;
 
@@ -905,17 +1001,24 @@ template <typename FloatType> struct MpfrAdapter {
     default: break;
     }
 
-    // Arithmetic ops: compute exact, round to format. Flags are
+    // Arithmetic ops: truncate to working precision (no-op at full
+    // precision), compute exact, round to format. Flags are
     // computed only for ReturnStatus Types — mirroring the library,
     // whose flag output is observable through that policy.
+    truncateToCompute<FloatType>(Ma);
+    truncateToCompute<FloatType>(Mb);
+    int Tern = 0;
     MpfrFloat Exact =
         mpfrExactOp(O, Ma, Mb, mpfrExactOpMode<typename FloatType::rounding>(),
-                    oraclePrecision<FloatType>);
+                    oraclePrecision<FloatType>, &Tern);
+    if constexpr (std::is_same_v<typename FloatType::rounding,
+                                 rounding::ToOdd>)
+      oddJam(Exact, Tern);
     BitsType R = mpfrRoundToFormat<FloatType>(Exact);
     uint8_t Flags = 0;
     if constexpr (std::is_same_v<typename FloatType::exceptions,
                                  opine::exceptions::ReturnStatus>)
-      Flags = mpfrFlags<FloatType>(O, Ma, Mb, Exact, R);
+      Flags = mpfrFlags<FloatType>(O, Ma, Mb, Exact, R, Tern != 0);
     return {R, Flags};
   }
 
@@ -978,6 +1081,7 @@ template <typename FloatType> struct MpfrAdapter {
       return {A, 0};
     }
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
+    truncateToCompute<FloatType>(Ma);
     MpfrFloat Exact = mpfrExactUnaryOp(O, Ma, oraclePrecision<FloatType>);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
@@ -987,6 +1091,9 @@ template <typename FloatType> struct MpfrAdapter {
     MpfrFloat Ma = decodeToMpfr<FloatType>(A);
     MpfrFloat Mb = decodeToMpfr<FloatType>(B);
     MpfrFloat Mc = decodeToMpfr<FloatType>(C);
+    truncateToCompute<FloatType>(Ma);
+    truncateToCompute<FloatType>(Mb);
+    truncateToCompute<FloatType>(Mc);
     // fma is a 2p-bit product plus a p-bit addend in ONE rounding;
     // rounding through an intermediate precision is innocuous only
     // from 3p+2 bits up (Figueroa's bound for p1+p2+2), so MulAdd
@@ -997,8 +1104,13 @@ template <typename FloatType> struct MpfrAdapter {
     const mpfr_prec_t Prec =
         oraclePrecision<FloatType> > 3 * P + 32 ? oraclePrecision<FloatType>
                                                 : 3 * P + 32;
+    int Tern = 0;
     MpfrFloat Exact = mpfrExactTernaryOp(
-        O, Ma, Mb, Mc, mpfrExactOpMode<typename FloatType::rounding>(), Prec);
+        O, Ma, Mb, Mc, mpfrExactOpMode<typename FloatType::rounding>(), Prec,
+        &Tern);
+    if constexpr (std::is_same_v<typename FloatType::rounding,
+                                 rounding::ToOdd>)
+      oddJam(Exact, Tern);
     return {mpfrRoundToFormat<FloatType>(Exact), 0};
   }
 };

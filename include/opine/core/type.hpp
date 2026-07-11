@@ -3,11 +3,17 @@
 
 // Root six-axis template.
 //
-// Type<Number, Layout, Rounding, Exceptions, Platform>
+// Type<Number, Layout, Rounding, Exceptions, Platform, ComputeFmt>
 //
 // Box is deferred in this slice — the axis exists in the design
 // but no scalar/vector distinction is expressed yet. All values
 // are implicitly scalar.
+//
+// ComputeFmt defaults to the Number's own precision; overriding it
+// with a narrower mant_bits makes every arithmetic operation
+// truncate its operands to that many significand bits before
+// computing (see computeOperand in round_pack.hpp) — the "store
+// IEEE bits, compute only the top K" tradeoff for slow targets.
 //
 // Type does two jobs:
 //   - Cross-validate Number and Layout (widths agree, sign
@@ -47,9 +53,11 @@ struct StorageFor<N> {
 template <typename Number, typename Layout,
           typename Rounding = rounding::Default,
           typename Exceptions = exceptions::Default,
-          typename Platform = platforms::Default>
+          typename Platform = platforms::Default,
+          typename ComputeFmt = DefaultComputeFormat<Number, Rounding>>
   requires ValidNumber<Number> && RoundingPolicy<Rounding> &&
-           ExceptionPolicy<Exceptions> && PlatformPolicy<Platform>
+           ExceptionPolicy<Exceptions> && PlatformPolicy<Platform> &&
+           ValidComputeFormat<ComputeFmt>
 struct Type {
   using number = Number;
   using layout = Layout;
@@ -59,7 +67,7 @@ struct Type {
 
   using storage_type = typename detail::StorageFor<Layout::total_bits>::type;
 
-  using compute_format = DefaultComputeFormat<Number, Rounding>;
+  using compute_format = ComputeFmt;
 
   static constexpr int swar_lanes =
       Platform::machine_word_bits / Layout::total_bits;
@@ -130,6 +138,20 @@ using RbjType =
 template <int E, int M>
 using FastType = Type<numbers::Relaxed<E, M>, layouts::IEEE<E, M, true>,
                       rounding::TowardZero, exceptions::Silent>;
+
+// The same Type computing at only K significand bits: operands are
+// truncated to their top K bits on the way into every arithmetic
+// operation, while storage, layout, and interchange stay identical
+// to T. The soft-float speed dial — K=8 on float32 storage buys a
+// single-byte multiply on hardware with no multiplier, at ~2^-7
+// relative error per operation (biased low; truncation never
+// rounds up). K >= T's precision is the identity.
+template <typename T, int K>
+using WithComputePrecision =
+    Type<typename T::number, typename T::layout, typename T::rounding,
+         typename T::exceptions, typename T::platform,
+         ComputeFormat<T::number::exponent::digit_count + 2, K,
+                       T::rounding::guard_bits>>;
 
 } // namespace opine
 
